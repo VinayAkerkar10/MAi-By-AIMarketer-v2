@@ -109,7 +109,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
-      - STRATEGY_PROVIDER=${STRATEGY_PROVIDER:-ollama}
+      - STRATEGY_PROVIDER=${STRATEGY_PROVIDER:-auto}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
       - OLLAMA_STRATEGY_MODEL=${OLLAMA_STRATEGY_MODEL:-llama2}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-120}

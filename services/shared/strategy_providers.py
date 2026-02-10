@@ -42,7 +42,7 @@ class OllamaStrategyProvider(StrategyProvider):
     """Ollama-based strategy provider (local deployment)"""
     
     def __init__(self):
-        self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
         self.model = os.getenv("OLLAMA_STRATEGY_MODEL", "llama2")
         self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
     
@@ -63,6 +63,7 @@ class OllamaStrategyProvider(StrategyProvider):
     ) -> Dict[str, Any]:
         """Generate strategy using Ollama"""
         import httpx
+        import json
         
         # Build prompt for strategy generation
         prompt = self._build_strategy_prompt(business_profile, additional_context)
@@ -74,6 +75,7 @@ class OllamaStrategyProvider(StrategyProvider):
                     json={
                         "model": self.model,
                         "prompt": prompt,
+                        "format": "json",
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
@@ -85,16 +87,25 @@ class OllamaStrategyProvider(StrategyProvider):
                 response.raise_for_status()
                 result = response.json()
                 
-                # Parse Ollama response
+                # Parse Ollama response (tolerate different response shapes)
                 strategy_text = result.get("response", "")
+                if not strategy_text and isinstance(result.get("message"), dict):
+                    strategy_text = result["message"].get("content", "")
+                if isinstance(strategy_text, dict):
+                    strategy_text = json.dumps(strategy_text)
+                if isinstance(strategy_text, str) and strategy_text.startswith('"') and strategy_text.endswith('"'):
+                    try:
+                        strategy_text = json.loads(strategy_text)
+                    except json.JSONDecodeError:
+                        pass
                 return self._parse_strategy_response(strategy_text, business_profile)
                 
         except httpx.RequestError as e:
             logger.error(f"Ollama request error: {e}")
-            raise Exception(f"Failed to connect to Ollama: {str(e)}")
+            return self._get_minimal_fallback_strategy(business_profile)
         except Exception as e:
             logger.error(f"Ollama strategy generation error: {e}")
-            raise Exception(f"Strategy generation failed: {str(e)}")
+            return self._get_minimal_fallback_strategy(business_profile)
     
     def _build_strategy_prompt(
         self,
@@ -129,16 +140,23 @@ BUSINESS PROFILE:
 5. If the budget seems low for the goals, provide specific recommendations and warnings
 6. All recommendations must be data-driven and industry-specific
 
+REQUIREMENTS (MUST FOLLOW):
+- Every field in the JSON must be present
+- No nulls or empty strings
+- All arrays must have at least 1 item
+- All objects must have realistic default values
+- If uncertain, invent reasonable industry-standard defaults
+
 Generate the strategy in the following JSON format:
 {
   "recommended_channels": ["Channel1", "Channel2", ...],
   "budget_allocation": {
-    "paid_advertising": <percentage based on customer preference and industry>,
-    "content_marketing": <percentage>,
-    "email_marketing": <percentage>,
-    "social_media": <percentage>,
-    "events_webinars": <percentage>,
-    "other": <percentage>
+    "paid_advertising": 0,
+    "content_marketing": 0,
+    "email_marketing": 0,
+    "social_media": 0,
+    "events_webinars": 0,
+    "other": 0
   },
   "budget_analysis": {
     "customer_budget": "<budget range provided>",
@@ -148,40 +166,40 @@ Generate the strategy in the following JSON format:
       "top_performers": "<budget range for top performers>",
       "minimum_viable": "<minimum budget to achieve basic goals>"
     },
-    "budget_assessment": "<low/adequate/optimal>",
+    "budget_assessment": "low|adequate|optimal",
     "budget_warnings": ["Warning 1 if budget is low", "Warning 2", ...],
     "budget_recommendations": ["Recommendation 1", "Recommendation 2", ...]
   },
   "target_segments": ["Segment1", "Segment2", ...],
   "campaign_timeline": {
     "phase_1": {
-      "name": "<Phase name based on strategy>",
-      "duration": "<timeframe>",
-      "description": "<detailed description>",
+      "name": "Phase name based on strategy",
+      "duration": "timeframe",
+      "description": "detailed description",
       "key_activities": ["Activity 1", "Activity 2", ...]
     },
     "phase_2": {
-      "name": "<Phase name>",
-      "duration": "<timeframe>",
-      "description": "<detailed description>",
+      "name": "Phase name",
+      "duration": "timeframe",
+      "description": "detailed description",
       "key_activities": ["Activity 1", "Activity 2", ...]
     },
     "phase_3": {
-      "name": "<Phase name>",
-      "duration": "<timeframe>",
-      "description": "<detailed description>",
+      "name": "Phase name",
+      "duration": "timeframe",
+      "description": "detailed description",
       "key_activities": ["Activity 1", "Activity 2", ...]
     },
     "phase_4": {
-      "name": "<Phase name>",
-      "duration": "<timeframe>",
-      "description": "<detailed description>",
+      "name": "Phase name",
+      "duration": "timeframe",
+      "description": "detailed description",
       "key_activities": ["Activity 1", "Activity 2", ...]
     }
   },
   "content_strategy": ["Content Type 1", "Content Type 2", ...],
   "kpis": ["KPI 1", "KPI 2", ...],
-  "insights": "Comprehensive strategic insights and recommendations",
+  "insights": "Concrete, actionable strategic insights and recommendations",
   "risk_assessment": "Potential risks and mitigation strategies"
 }
 
@@ -193,7 +211,7 @@ IMPORTANT:
 - All percentages in budget_allocation must sum to 100
 - Timeline should be realistic and achievable based on the budget and goals
 
-Provide only valid JSON, no additional text."""
+Provide only valid JSON, no additional text and no Markdown code fences. If unsure, invent plausible defaults."""
         
         return prompt
     
@@ -205,42 +223,64 @@ Provide only valid JSON, no additional text."""
         """Parse Ollama response into strategy format"""
         import json
         import re
+        from json import JSONDecoder
         
-        # Try to extract JSON from response
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            try:
-                strategy_data = json.loads(json_match.group())
-                
-                # Validate and structure the response
-                parsed_strategy = {
-                    "recommended_channels": strategy_data.get("recommended_channels", []),
-                    "budget_allocation": strategy_data.get("budget_allocation", {}),
-                    "budget_analysis": strategy_data.get("budget_analysis", {}),
-                    "target_segments": strategy_data.get("target_segments", []),
-                    "campaign_timeline": strategy_data.get("campaign_timeline", {}),
-                    "content_strategy": strategy_data.get("content_strategy", []),
-                    "kpis": strategy_data.get("kpis", []),
-                    "insights": strategy_data.get("insights", ""),
-                    "risk_assessment": strategy_data.get("risk_assessment", ""),
-                    "provider": "ollama",
-                    "model": self.model
-                }
-                
-                # Validate budget allocation sums to 100
-                budget_allocation = parsed_strategy.get("budget_allocation", {})
-                total = sum(v for v in budget_allocation.values() if isinstance(v, (int, float)))
-                if total != 100 and total > 0:
-                    logger.warning(f"Budget allocation sums to {total}%, normalizing to 100%")
-                    # Normalize to 100%
-                    for key in budget_allocation:
-                        if isinstance(budget_allocation[key], (int, float)):
-                            budget_allocation[key] = round((budget_allocation[key] / total) * 100, 2)
-                
-                return parsed_strategy
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON from Ollama response: {e}")
-                logger.debug(f"Response text: {response_text[:500]}")
+        def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+            text = text.strip()
+            if not text:
+                return None
+
+            # Strip Markdown code fences if present
+            fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+            if fence_match:
+                try:
+                    return json.loads(fence_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+            # Try to decode from first JSON object in the text
+            decoder = JSONDecoder()
+            for idx, ch in enumerate(text):
+                if ch == "{":
+                    try:
+                        obj, _ = decoder.raw_decode(text[idx:])
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        continue
+            return None
+
+        strategy_data = _extract_json(response_text)
+        if strategy_data:
+            # Validate and structure the response
+            parsed_strategy = {
+                "recommended_channels": strategy_data.get("recommended_channels", []),
+                "budget_allocation": strategy_data.get("budget_allocation", {}),
+                "budget_analysis": strategy_data.get("budget_analysis", {}),
+                "target_segments": strategy_data.get("target_segments", []),
+                "campaign_timeline": strategy_data.get("campaign_timeline", {}),
+                "content_strategy": strategy_data.get("content_strategy", []),
+                "kpis": strategy_data.get("kpis", []),
+                "insights": strategy_data.get("insights", ""),
+                "risk_assessment": strategy_data.get("risk_assessment", ""),
+                "provider": "ollama",
+                "model": self.model
+            }
+            
+            # Validate budget allocation sums to 100
+            budget_allocation = parsed_strategy.get("budget_allocation", {})
+            total = sum(v for v in budget_allocation.values() if isinstance(v, (int, float)))
+            if total != 100 and total > 0:
+                logger.warning(f"Budget allocation sums to {total}%, normalizing to 100%")
+                # Normalize to 100%
+                for key in budget_allocation:
+                    if isinstance(budget_allocation[key], (int, float)):
+                        budget_allocation[key] = round((budget_allocation[key] / total) * 100, 2)
+            
+            return parsed_strategy
+        else:
+            logger.error("Failed to extract JSON from Ollama response")
+            logger.debug(f"Response text: {response_text[:500]}")
         
         # If parsing fails, try to get AI to fix it or use minimal fallback
         logger.warning("Failed to parse AI response, using minimal fallback")

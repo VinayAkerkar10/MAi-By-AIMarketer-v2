@@ -14,6 +14,7 @@ import os
 # Add parent directory to path for shared imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from services.init_db import initialize_feature_matrix, seed_default_org_user_license
 from shared.database import (
     get_db, Organization, User, License, UserRole, LicenseStatus, LicenseType, LicensePeriod
 )
@@ -26,6 +27,14 @@ app = FastAPI(
     description="Authentication and Organization Management - Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.",
     version="1.0.0"
 )
+
+@app.on_event("startup")
+def ensure_db_initialized():
+    # Create tables if missing and ensure baseline seed data exists
+    from shared.database import init_db
+    init_db()
+    initialize_feature_matrix()
+    seed_default_org_user_license()
 
 app.add_middleware(
     CORSMiddleware,
