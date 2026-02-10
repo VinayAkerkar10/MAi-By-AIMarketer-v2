@@ -1,0 +1,26 @@
+{
+  "default": {
+    "phase_1": "Awareness Building (Months 1-2)",
+    "phase_2": "Lead Generation (Months 2-4)",
+    "phase_3": "Nurturing & Conversion (Months 4-6)",
+    "phase_4": "Retention & Expansion (Months 6+)"
+  },
+  "fast_track": {
+    "phase_1": "Quick Launch (Weeks 1-2)",
+    "phase_2": "Rapid Growth (Weeks 3-6)",
+    "phase_3": "Optimization (Weeks 7-12)",
+    "phase_4": "Scale & Expand (Months 4+)"
+  },
+  "enterprise": {
+    "phase_1": "Foundation & Planning (Months 1-3)",
+    "phase_2": "Pilot Programs (Months 4-6)",
+    "phase_3": "Full Deployment (Months 7-12)",
+    "phase_4": "Optimization & Growth (Year 2+)"
+  },
+  "startup": {
+    "phase_1": "MVP Launch (Months 1-2)",
+    "phase_2": "User Acquisition (Months 3-4)",
+    "phase_3": "Growth Hacking (Months 5-8)",
+    "phase_4": "Scale & Monetize (Months 9+)"
+  }
+}

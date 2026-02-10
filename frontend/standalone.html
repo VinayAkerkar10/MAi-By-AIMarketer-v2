@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAi by AIMarketer - Standalone UI (No Database Required)</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .demo-banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .demo-banner strong {
+            display: block;
+            margin-bottom: 4px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Demo Banner -->
+    <div class="demo-banner">
+        <strong>🎉 Standalone Mode - No Database Required!</strong>
+        <span>All data is stored locally in your browser. Perfect for exploring the UI!</span>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <div class="header__content">
+                <div class="header__brand">
+                    <h1 class="header__title">MAi by AIMarketer</h1>
+                    <p class="header__subtitle">Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.</p>
+                </div>
+                <div class="header__actions">
+                    <button class="btn btn--outline btn--sm" id="exportData">Export Data</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Navigation -->
+    <nav class="nav">
+        <div class="container">
+            <div class="nav__tabs">
+                <button class="nav__tab nav__tab--active" data-module="business-profile">Business Profile</button>
+                <button class="nav__tab" data-module="strategy-generator">AI Strategy Generator</button>
+                <button class="nav__tab" data-module="lead-scraper">Google Maps Lead Scraper</button>
+                <button class="nav__tab" data-module="data-enrichment">Customer Data Enrichment</button>
+                <button class="nav__tab" data-module="campaign-manager">Multi-Channel Campaign Manager</button>
+                <button class="nav__tab" data-module="analytics">Analytics & Reporting</button>
+                <button class="nav__tab" data-module="templates">Template Library</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main">
+        <div class="container">
+            <!-- Module 1: Business Profile -->
+            <div class="module" id="business-profile">
+                <div class="module__header">
+                    <h2>Business Profile</h2>
+                    <p>Tell us about your business to get personalized AI recommendations</p>
+                </div>
+                
+                <div class="grid grid--two-col">
+                    <div class="card">
+                        <div class="card__body">
+                            <form id="businessProfileForm">
+                                <div class="form-group">
+                                    <label class="form-label" for="businessName">Business Name</label>
+                                    <input type="text" class="form-control" id="businessName" required>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="industry">Industry</label>
+                                    <select class="form-control" id="industry" required>
+                                        <option value="">Select Industry</option>
+                                        <option value="Technology">Technology</option>
+                                        <option value="Healthcare">Healthcare</option>
+                                        <option value="Finance">Finance</option>
+                                        <option value="Manufacturing">Manufacturing</option>
+                                        <option value="Professional Services">Professional Services</option>
+                                        <option value="Retail">Retail</option>
+                                        <option value="Education">Education</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="companySize">Company Size</label>
+                                    <select class="form-control" id="companySize" required>
+                                        <option value="">Select Size</option>
+                                        <option value="Small">Small (1-50 employees)</option>
+                                        <option value="Medium">Medium (51-500 employees)</option>
+                                        <option value="Large">Large (500+ employees)</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="revenue">Annual Revenue ($)</label>
+                                    <input type="number" class="form-control" id="revenue" min="0">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="geography">Geographic Markets</label>
+                                    <input type="text" class="form-control" id="geography" placeholder="e.g., North America, Europe">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Marketing Goals</label>
+                                    <div class="checkbox-group">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" value="Lead Generation"> Lead Generation
+                                        </label>
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" value="Brand Awareness"> Brand Awareness
+                                        </label>
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" value="Customer Retention"> Customer Retention
+                                        </label>
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" value="Market Expansion"> Market Expansion
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="budget">Marketing Budget Range</label>
+                                    <input type="text" class="form-control" id="budget" placeholder="e.g., $10k-$50k">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="targetAudience">Target Audience Description</label>
+                                    <textarea class="form-control" id="targetAudience" rows="3" placeholder="Describe your ideal customers..."></textarea>
+                                </div>
+                                
+                                <button type="submit" class="btn btn--primary btn--full-width">Save Business Profile</button>
+                            </form>
+                        </div>
+                    </div>
+                    
+                    <div class="card" id="profileSummary" style="display: none;">
+                        <div class="card__header">
+                            <h3>Profile Summary</h3>
+                        </div>
+                        <div class="card__body" id="profileSummaryContent">
+                            <!-- Profile summary will be populated here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 2: AI Strategy Generator -->
+            <div class="module hidden" id="strategy-generator">
+                <div class="module__header">
+                    <h2>AI Strategy Generator</h2>
+                    <p>Get AI-powered marketing recommendations based on your business profile</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card__body">
+                        <div id="strategyInput">
+                            <div class="alert alert--info" id="profileAlert">
+                                <p>Please complete your Business Profile first to generate personalized strategies.</p>
+                            </div>
+                            <button class="btn btn--primary" id="generateStrategy" disabled>Generate AI Strategy</button>
+                        </div>
+                        
+                        <div id="strategyLoading" class="hidden">
+                            <div class="loading-spinner"></div>
+                            <p>AI is analyzing your business profile and generating recommendations...</p>
+                        </div>
+                        
+                        <div id="strategyResults" class="hidden">
+                            <div class="strategy-section">
+                                <h3>Recommended Marketing Channels</h3>
+                                <div id="channelRecommendations" class="channel-grid"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Budget Allocation</h3>
+                                <div id="budgetAllocation"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Budget Analysis</h3>
+                                <div id="budgetAnalysis"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Campaign Timeline</h3>
+                                <div id="campaignTimeline"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Key Messaging</h3>
+                                <div id="keyMessaging"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Content Strategy</h3>
+                                <div id="contentStrategy"></div>
+                            </div>
+                            
+                            <div class="strategy-section">
+                                <h3>Strategic Insights</h3>
+                                <div id="strategicInsights"></div>
+                            </div>
+                            
+                            <button class="btn btn--secondary mt-8" id="exportStrategy">Export Strategy as PDF</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 3: Google Maps Lead Scraper -->
+            <div class="module hidden" id="lead-scraper">
+                <div class="module__header">
+                    <h2>Google Maps Lead Scraper</h2>
+                    <p>Find potential B2B leads in your target market</p>
+                </div>
+                
+                <div class="grid grid--two-col">
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>Search Parameters</h3>
+                        </div>
+                        <div class="card__body">
+                            <form id="leadScraperForm">
+                                <div class="form-group">
+                                    <label class="form-label" for="location">Location</label>
+                                    <input type="text" class="form-control" id="location" placeholder="e.g., San Francisco, CA" required>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="businessType">Business Type/Category</label>
+                                    <select class="form-control" id="businessType" required>
+                                        <option value="">Select Category</option>
+                                        <option value="Software Development">Software Development</option>
+                                        <option value="Data Analytics">Data Analytics</option>
+                                        <option value="Cloud Services">Cloud Services</option>
+                                        <option value="Cybersecurity">Cybersecurity</option>
+                                        <option value="Artificial Intelligence">Artificial Intelligence</option>
+                                        <option value="Consulting">Consulting</option>
+                                        <option value="Marketing Agency">Marketing Agency</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="radius">Search Radius (miles)</label>
+                                    <input type="range" class="form-control" id="radius" min="1" max="50" value="10">
+                                    <div class="range-value">10 miles</div>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label" for="maxResults">Max Results</label>
+                                    <input type="number" class="form-control" id="maxResults" min="1" max="100" value="25">
+                                </div>
+                                
+                                <button type="submit" class="btn btn--primary btn--full-width">Start Scraping</button>
+                            </form>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>Search Results</h3>
+                            <button class="btn btn--secondary btn--sm" id="exportLeads" disabled>Export as CSV</button>
+                        </div>
+                        <div class="card__body">
+                            <div id="scrapingProgress" class="hidden">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="progressFill"></div>
+                                </div>
+                                <p>Scraping leads... <span id="progressText">0%</span></p>
+                            </div>
+                            
+                            <div id="leadsResults" class="hidden">
+                                <div class="table-responsive">
+                                    <table class="table" id="leadsTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Business Name</th>
+                                                <th>Address</th>
+                                                <th>Phone</th>
+                                                <th>Website</th>
+                                                <th>Rating</th>
+                                                <th>Category</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="leadsTableBody">
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <div id="noLeadsMessage" class="text-center">
+                                <p>No leads found. Use the search form to find potential customers.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 4: Customer Data Enrichment -->
+            <div class="module hidden" id="data-enrichment">
+                <div class="module__header">
+                    <h2>Customer Data Enrichment</h2>
+                    <p>Enhance your existing customer data with additional contact information</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card__body">
+                        <div class="enrichment-steps">
+                            <div class="step" id="step1">
+                                <h3>Step 1: Upload Customer Data</h3>
+                                <div class="file-upload-area" id="fileUploadArea">
+                                    <div class="file-upload-content">
+                                        <p>Drag and drop your CSV/Excel file here or click to browse</p>
+                                        <input type="file" id="customerDataFile" accept=".csv,.xlsx,.xls" hidden>
+                                        <button class="btn btn--secondary" onclick="document.getElementById('customerDataFile').click()">Choose File</button>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="step hidden" id="step2">
+                                <h3>Step 2: Map Columns</h3>
+                                <div id="columnMapping">
+                                    <!-- Column mapping interface will be populated here -->
+                                </div>
+                                <button class="btn btn--primary" id="startEnrichment">Start Enrichment</button>
+                            </div>
+                            
+                            <div class="step hidden" id="step3">
+                                <h3>Step 3: Enrichment Progress</h3>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="enrichmentProgress"></div>
+                                </div>
+                                <p>Enriching customer data... <span id="enrichmentProgressText">0%</span></p>
+                            </div>
+                            
+                            <div class="step hidden" id="step4">
+                                <h3>Step 4: Results Comparison</h3>
+                                <div class="comparison-tables">
+                                    <div class="comparison-section">
+                                        <h4>Before Enrichment</h4>
+                                        <div class="table-responsive">
+                                            <table class="table" id="beforeTable">
+                                                <thead id="beforeTableHead"></thead>
+                                                <tbody id="beforeTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="comparison-section">
+                                        <h4>After Enrichment</h4>
+                                        <div class="table-responsive">
+                                            <table class="table" id="afterTable">
+                                                <thead id="afterTableHead"></thead>
+                                                <tbody id="afterTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button class="btn btn--secondary" id="downloadEnrichedData">Download Enriched Data</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 5: Multi-Channel Campaign Manager -->
+            <div class="module hidden" id="campaign-manager">
+                <div class="module__header">
+                    <h2>Multi-Channel Campaign Manager</h2>
+                    <p>Create and manage marketing campaigns across multiple channels</p>
+                </div>
+                
+                <div class="campaign-tabs">
+                    <button class="campaign-tab campaign-tab--active" data-tab="create">Create Campaign</button>
+                    <button class="campaign-tab" data-tab="active">Active Campaigns</button>
+                </div>
+                
+                <div class="campaign-content" id="createCampaign">
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>Campaign Creation Wizard</h3>
+                        </div>
+                        <div class="card__body">
+                            <div class="wizard-steps">
+                                <div class="wizard-step wizard-step--active" data-step="1">
+                                    <h4>Campaign Details</h4>
+                                    <form id="campaignDetailsForm">
+                                        <div class="form-group">
+                                            <label class="form-label" for="campaignName">Campaign Name</label>
+                                            <input type="text" class="form-control" id="campaignName" required>
+                                        </div>
+                                        
+                                        <div class="form-group">
+                                            <label class="form-label" for="campaignObjective">Campaign Objective</label>
+                                            <select class="form-control" id="campaignObjective" required>
+                                                <option value="">Select Objective</option>
+                                                <option value="Lead Generation">Lead Generation</option>
+                                                <option value="Brand Awareness">Brand Awareness</option>
+                                                <option value="Customer Retention">Customer Retention</option>
+                                                <option value="Product Launch">Product Launch</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <button type="button" class="btn btn--primary" onclick="nextWizardStep(2)">Next</button>
+                                    </form>
+                                </div>
+                                
+                                <div class="wizard-step hidden" data-step="2">
+                                    <h4>Channel Selection</h4>
+                                    <div class="channel-selection">
+                                        <div class="checkbox-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="Email"> Email Marketing
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="LinkedIn"> LinkedIn
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="Facebook"> Facebook
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="WhatsApp"> WhatsApp Business
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="Twitter"> Twitter
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="wizard-navigation">
+                                        <button type="button" class="btn btn--secondary" onclick="nextWizardStep(1)">Previous</button>
+                                        <button type="button" class="btn btn--primary" onclick="nextWizardStep(3)">Next</button>
+                                    </div>
+                                </div>
+                                
+                                <div class="wizard-step hidden" data-step="3">
+                                    <h4>Target Audience</h4>
+                                    <div class="form-group">
+                                        <label class="form-label">Audience Source</label>
+                                        <select class="form-control" id="audienceSource">
+                                            <option value="scraped">Scraped Leads</option>
+                                            <option value="uploaded">Uploaded Customer Data</option>
+                                            <option value="manual">Manual Selection</option>
+                                        </select>
+                                    </div>
+                                    <div class="wizard-navigation">
+                                        <button type="button" class="btn btn--secondary" onclick="nextWizardStep(2)">Previous</button>
+                                        <button type="button" class="btn btn--primary" onclick="nextWizardStep(4)">Next</button>
+                                    </div>
+                                </div>
+                                
+                                <div class="wizard-step hidden" data-step="4">
+                                    <h4>Content Creation</h4>
+                                    <div id="contentCreation">
+                                        <!-- Content forms will be populated based on selected channels -->
+                                    </div>
+                                    <div class="wizard-navigation">
+                                        <button type="button" class="btn btn--secondary" onclick="nextWizardStep(3)">Previous</button>
+                                        <button type="button" class="btn btn--primary" onclick="nextWizardStep(5)">Next</button>
+                                    </div>
+                                </div>
+                                
+                                <div class="wizard-step hidden" data-step="5">
+                                    <h4>Scheduling</h4>
+                                    <div class="form-group">
+                                        <label class="form-label" for="launchDate">Launch Date</label>
+                                        <input type="datetime-local" class="form-control" id="launchDate">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="endDate">End Date</label>
+                                        <input type="datetime-local" class="form-control" id="endDate">
+                                    </div>
+                                    <div class="wizard-navigation">
+                                        <button type="button" class="btn btn--secondary" onclick="nextWizardStep(4)">Previous</button>
+                                        <button type="button" class="btn btn--primary" id="createCampaignBtn">Create Campaign</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="campaign-content hidden" id="activeCampaigns">
+                    <div class="campaigns-grid" id="campaignsGrid">
+                        <!-- Active campaigns will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 6: Analytics & Reporting -->
+            <div class="module hidden" id="analytics">
+                <div class="module__header">
+                    <h2>Analytics & Reporting</h2>
+                    <p>Monitor campaign performance and track key metrics</p>
+                </div>
+                
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-card__icon">📊</div>
+                        <div class="metric-card__content">
+                            <div class="metric-card__value" id="totalLeadsMetric">0</div>
+                            <div class="metric-card__label">Total Leads</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-card__icon">🎯</div>
+                        <div class="metric-card__content">
+                            <div class="metric-card__value" id="activeCampaignsMetric">0</div>
+                            <div class="metric-card__label">Active Campaigns</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-card__icon">📈</div>
+                        <div class="metric-card__content">
+                            <div class="metric-card__value" id="conversionRateMetric">0%</div>
+                            <div class="metric-card__label">Conversion Rate</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-card__icon">💰</div>
+                        <div class="metric-card__content">
+                            <div class="metric-card__value" id="roiMetric">0%</div>
+                            <div class="metric-card__label">ROI</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="charts-grid">
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>Campaign Performance Over Time</h3>
+                        </div>
+                        <div class="card__body">
+                            <div class="chart-container" style="position: relative; height: 300px;">
+                                <canvas id="performanceChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>Lead Conversion Funnel</h3>
+                        </div>
+                        <div class="card__body">
+                            <div class="chart-container" style="position: relative; height: 300px;">
+                                <canvas id="funnelChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card__header">
+                        <h3>Downloadable Reports</h3>
+                    </div>
+                    <div class="card__body">
+                        <div class="reports-grid">
+                            <button class="btn btn--outline">Monthly Performance Report</button>
+                            <button class="btn btn--outline">Lead Generation Report</button>
+                            <button class="btn btn--outline">Campaign ROI Analysis</button>
+                            <button class="btn btn--outline">Channel Performance Report</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Module 7: Template Library -->
+            <div class="module hidden" id="templates">
+                <div class="module__header">
+                    <h2>Template Library</h2>
+                    <p>Browse and use pre-built templates for faster campaign creation</p>
+                </div>
+                
+                <div class="template-filters">
+                    <div class="filter-group">
+                        <label class="form-label">Category</label>
+                        <select class="form-control" id="templateCategory">
+                            <option value="">All Categories</option>
+                            <option value="Email">Email</option>
+                            <option value="LinkedIn">LinkedIn</option>
+                            <option value="WhatsApp">WhatsApp</option>
+                            <option value="Social Media">Social Media</option>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label class="form-label">Industry</label>
+                        <select class="form-control" id="templateIndustry">
+                            <option value="">All Industries</option>
+                            <option value="SaaS">SaaS</option>
+                            <option value="Healthcare">Healthcare</option>
+                            <option value="Finance">Finance</option>
+                            <option value="Professional Services">Professional Services</option>
+                            <option value="Technology">Technology</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="templates-grid" id="templatesGrid">
+                    <!-- Templates will be populated here -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal for Template Preview -->
+    <div class="modal hidden" id="templateModal">
+        <div class="modal__overlay">
+            <div class="modal__content">
+                <div class="modal__header">
+                    <h3 id="modalTemplateTitle">Template Preview</h3>
+                    <button class="modal__close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal__body">
+                    <div id="modalTemplateContent"></div>
+                </div>
+                <div class="modal__footer">
+                    <button class="btn btn--secondary" onclick="closeModal()">Close</button>
+                    <button class="btn btn--primary" id="useTemplateBtn">Use Template</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2025 MAi by AIMarketer - Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+    <script>
+        // Override strategy generation to work without backend
+        const originalGenerateAIStrategy = window.generateAIStrategy;
+        
+        window.generateAIStrategy = async function() {
+            console.log('Generating AI strategy (standalone mode)...');
+            
+            const loadingDiv = document.getElementById('strategyLoading');
+            const inputDiv = document.getElementById('strategyInput');
+            const resultsDiv = document.getElementById('strategyResults');
+            
+            if (!loadingDiv || !inputDiv || !resultsDiv) return;
+            
+            // Show loading state
+            inputDiv.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+            resultsDiv.classList.add('hidden');
+            
+            // Simulate AI processing (in real app, this would call the backend)
+            setTimeout(() => {
+                const strategy = generateStrategyRecommendations();
+                appData.generatedStrategy = strategy;
+                saveDataToStorage();
+                
+                displayStrategyResults(strategy);
+                
+                loadingDiv.classList.add('hidden');
+                resultsDiv.classList.remove('hidden');
+                
+                showSuccessMessage('AI strategy generated successfully! (Standalone Mode - No Backend Required)');
+            }, 2000);
+        };
+        
+        // Enhanced strategy display with budget analysis
+        function displayStrategyResults(strategy) {
+            // Display channels
+            const channelGrid = document.getElementById('channelRecommendations');
+            if (channelGrid) {
+                channelGrid.innerHTML = strategy.channels.map(channel => `
+                    <div class="channel-card">
+                        <h4>${channel}</h4>
+                        <p>Recommended for your industry</p>
+                    </div>
+                `).join('');
+            }
+            
+            // Display budget allocation
+            const budgetDiv = document.getElementById('budgetAllocation');
+            if (budgetDiv) {
+                budgetDiv.innerHTML = Object.entries(strategy.budgetAllocation).map(([channel, percentage]) => `
+                    <div class="budget-item">
+                        <strong>${channel}:</strong> ${percentage} ($${Math.round((parseFloat(percentage) / 100) * (strategy.targetBudget || 10000)).toLocaleString()})
+                    </div>
+                `).join('');
+            }
+            
+            // Display budget analysis (if available)
+            const budgetAnalysisDiv = document.getElementById('budgetAnalysis');
+            if (budgetAnalysisDiv && strategy.budgetAnalysis) {
+                const analysis = strategy.budgetAnalysis;
+                budgetAnalysisDiv.innerHTML = `
+                    <div class="alert alert--info">
+                        <p><strong>Budget Assessment:</strong> ${analysis.budget_assessment || 'adequate'}</p>
+                        <p><strong>Recommended Budget:</strong> ${analysis.recommended_budget_range || 'Based on your goals'}</p>
+                        ${analysis.competitor_benchmark ? `
+                            <p><strong>Industry Average:</strong> ${analysis.competitor_benchmark.industry_average || 'N/A'}</p>
+                        ` : ''}
+                        ${analysis.budget_warnings && analysis.budget_warnings.length > 0 ? `
+                            <div style="margin-top: 12px;">
+                                <strong>Warnings:</strong>
+                                <ul>
+                                    ${analysis.budget_warnings.map(w => `<li>${w}</li>`).join('')}
+                                </ul>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+            
+            // Display timeline
+            const timelineDiv = document.getElementById('campaignTimeline');
+            if (timelineDiv) {
+                if (strategy.campaign_timeline && typeof strategy.campaign_timeline === 'object') {
+                    // New AI-generated timeline format
+                    timelineDiv.innerHTML = Object.entries(strategy.campaign_timeline).map(([phase, data]) => {
+                        if (typeof data === 'object' && data.name) {
+                            return `
+                                <div class="timeline-item">
+                                    <h4>${data.name}</h4>
+                                    <p><strong>Duration:</strong> ${data.duration}</p>
+                                    <p>${data.description}</p>
+                                    ${data.key_activities ? `
+                                        <ul>
+                                            ${data.key_activities.map(activity => `<li>${activity}</li>`).join('')}
+                                        </ul>
+                                    ` : ''}
+                                </div>
+                            `;
+                        } else {
+                            return `<div class="timeline-item">${data}</div>`;
+                        }
+                    }).join('');
+                } else {
+                    timelineDiv.innerHTML = `<div class="timeline-item">${strategy.timeline || 'Timeline will be generated by AI'}</div>`;
+                }
+            }
+            
+            // Display key messaging
+            const messagingDiv = document.getElementById('keyMessaging');
+            if (messagingDiv) {
+                messagingDiv.innerHTML = strategy.keyMessages.map(message => `
+                    <div class="message-item">${message}</div>
+                `).join('');
+            }
+            
+            // Display content strategy
+            const contentDiv = document.getElementById('contentStrategy');
+            if (contentDiv) {
+                contentDiv.innerHTML = strategy.contentStrategy.map(content => `
+                    <div class="content-item">${content}</div>
+                `).join('');
+            }
+            
+            // Display strategic insights
+            const insightsDiv = document.getElementById('strategicInsights');
+            if (insightsDiv && strategy.insights) {
+                insightsDiv.innerHTML = `<div class="alert alert--info"><p>${strategy.insights}</p></div>`;
+            }
+        }
+    </script>
+</body>
+</html>

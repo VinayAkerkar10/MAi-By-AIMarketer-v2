@@ -1,0 +1,8 @@
+{
+  "technology": ["LinkedIn", "Email", "Content Marketing", "Webinars"],
+  "healthcare": ["Email", "LinkedIn", "Industry Publications", "Conferences"],
+  "finance": ["LinkedIn", "Email", "Thought Leadership", "Referrals"],
+  "manufacturing": ["LinkedIn", "Trade Shows", "Email", "Direct Sales"],
+  "retail": ["Social Media", "Email", "Influencer Marketing", "SEO"],
+  "default": ["Email", "LinkedIn", "Social Media"]
+}

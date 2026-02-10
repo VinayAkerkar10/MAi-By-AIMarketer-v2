@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>MAi UI - Direct Access</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            max-width: 700px;
+            margin: 0 auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #21808d;
+            margin-bottom: 10px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        .status.checking {
+            background: #fff3cd;
+            color: #856404;
+            border: 2px solid #ffc107;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #28a745;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #dc3545;
+        }
+        .btn {
+            display: inline-block;
+            background: #21808d;
+            color: white;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            margin: 10px 5px;
+            font-weight: bold;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        .btn:hover {
+            background: #1a6b75;
+        }
+        .btn-large {
+            font-size: 18px;
+            padding: 18px 40px;
+        }
+        .instructions {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #21808d;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #21808d;
+        }
+        .instructions code {
+            background: #e9ecef;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            color: #d63384;
+        }
+        .error-details {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #ffc107;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 MAi UI - Server Status</h1>
+        <p>Checking if the web server is running...</p>
+        
+        <div id="status" class="status checking">
+            🔄 Checking server status...
+        </div>
+
+        <div id="content" style="display: none;">
+            <div id="successContent" style="display: none;">
+                <h2>✅ Server is Running!</h2>
+                <p>Click the button below to open the UI:</p>
+                <a href="standalone.html" class="btn btn-large" target="_blank">Open MAi UI</a>
+            </div>
+
+            <div id="errorContent" style="display: none;">
+                <h2>❌ Server Not Running</h2>
+                <div class="error-details">
+                    <p><strong>Error Code: -102</strong> means the server isn't running or the connection was refused.</p>
+                </div>
+                
+                <div class="instructions">
+                    <h3>🔧 How to Start the Server:</h3>
+                    <p><strong>Option 1: Double-click launcher</strong></p>
+                    <ol>
+                        <li>Go to the <code>frontend</code> folder</li>
+                        <li>Double-click <code>START_UI.bat</code></li>
+                        <li>Wait for "Serving HTTP on 0.0.0.0 port 8080"</li>
+                        <li>Refresh this page</li>
+                    </ol>
+                    
+                    <p><strong>Option 2: Manual start</strong></p>
+                    <ol>
+                        <li>Open PowerShell in the <code>frontend</code> folder</li>
+                        <li>Run: <code>python -m http.server 8080</code></li>
+                        <li>Keep that window open</li>
+                        <li>Refresh this page</li>
+                    </ol>
+                    
+                    <p><strong>Option 3: Open file directly</strong></p>
+                    <ol>
+                        <li>Navigate to <code>frontend</code> folder</li>
+                        <li>Right-click <code>standalone.html</code></li>
+                        <li>Select "Open with" → Your browser</li>
+                        <li><em>Note: Some features may not work without a server</em></li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+            <h3>📋 Quick Links:</h3>
+            <a href="standalone.html" class="btn">Try Standalone UI</a>
+            <a href="index.html" class="btn">Original UI</a>
+            <a href="test.html" class="btn">Test Page</a>
+        </div>
+    </div>
+
+    <script>
+        let checkCount = 0;
+        const maxChecks = 3;
+
+        function checkServer() {
+            checkCount++;
+            const statusDiv = document.getElementById('status');
+            const contentDiv = document.getElementById('content');
+            const successDiv = document.getElementById('successContent');
+            const errorDiv = document.getElementById('errorContent');
+
+            // Try to fetch from the server
+            fetch('standalone.html', { method: 'HEAD' })
+                .then(response => {
+                    if (response.ok) {
+                        statusDiv.className = 'status success';
+                        statusDiv.innerHTML = '✅ Server is running on port 8080!';
+                        contentDiv.style.display = 'block';
+                        successDiv.style.display = 'block';
+                        errorDiv.style.display = 'none';
+                    } else {
+                        throw new Error('Server responded with error');
+                    }
+                })
+                .catch(error => {
+                    if (checkCount < maxChecks) {
+                        statusDiv.innerHTML = `🔄 Checking... (Attempt ${checkCount}/${maxChecks})`;
+                        setTimeout(checkServer, 2000);
+                    } else {
+                        statusDiv.className = 'status error';
+                        statusDiv.innerHTML = '❌ Server is not running. Error Code: -102';
+                        contentDiv.style.display = 'block';
+                        successDiv.style.display = 'none';
+                        errorDiv.style.display = 'block';
+                    }
+                });
+        }
+
+        // Start checking immediately
+        checkServer();
+
+        // Also try to check if we can access the file directly (for file:// protocol)
+        if (window.location.protocol === 'file:') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = 'status error';
+            statusDiv.innerHTML = '⚠️ You opened this file directly. Use a web server for best results.';
+            document.getElementById('content').style.display = 'block';
+            document.getElementById('errorContent').style.display = 'block';
+        }
+    </script>
+</body>
+</html>

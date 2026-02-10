@@ -1,0 +1,295 @@
+# MAi by AIMarketer - Microservices Docker Compose Configuration
+# Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Shared)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=mai_user
+      - POSTGRES_PASSWORD=mai_password
+      - POSTGRES_DB=mai_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mai_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mai_user -d mai_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB for Templates and Unstructured Data
+  mongo:
+    image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=mai_admin
+      - MONGO_INITDB_ROOT_PASSWORD=mai_password
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - mai_network
+
+  # Redis for Caching and Task Queue
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mai_network
+
+  # Auth & Organization Management Service
+  auth_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.auth_service.main:app --host 0.0.0.0 --port 8001 --reload
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - JWT_EXPIRE_MINUTES=30
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Licensing Service
+  licensing_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.licensing_service.main:app --host 0.0.0.0 --port 8002 --reload
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Ollama Service (Local AI Model)
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - mai_network
+    profiles:
+      - ollama
+    # Note: After starting, pull a model with: docker exec -it ollama ollama pull llama2
+
+  # StrategyAI Service
+  strategy_ai_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.strategy_ai_service.main:app --host 0.0.0.0 --port 8003 --reload
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - STRATEGY_PROVIDER=${STRATEGY_PROVIDER:-ollama}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_STRATEGY_MODEL=${OLLAMA_STRATEGY_MODEL:-llama2}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-120}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
+      - OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS:-2000}
+      - CONFIG_DIR=/app/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Lead Enrichment Service
+  lead_enrichment_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.lead_enrichment_service.main:app --host 0.0.0.0 --port 8004 --reload
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - CLEARBIT_API_KEY=${CLEARBIT_API_KEY}
+      - HUNTER_IO_API_KEY=${HUNTER_IO_API_KEY}
+      - OUTSCRAPER_API_KEY=${OUTSCRAPER_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Campaign Planner Service
+  campaign_planner_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.campaign_planner_service.main:app --host 0.0.0.0 --port 8005 --reload
+    ports:
+      - "8005:8005"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - FACEBOOK_ACCESS_TOKEN=${FACEBOOK_ACCESS_TOKEN}
+      - LINKEDIN_ACCESS_TOKEN=${LINKEDIN_ACCESS_TOKEN}
+      - TWITTER_ACCESS_TOKEN=${TWITTER_ACCESS_TOKEN}
+      - WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Analytics Service
+  analytics_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn services.analytics_service.main:app --host 0.0.0.0 --port 8006 --reload
+    ports:
+      - "8006:8006"
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # API Gateway
+  api_gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - AUTH_SERVICE_URL=http://auth_service:8001
+      - LICENSING_SERVICE_URL=http://licensing_service:8002
+      - STRATEGY_SERVICE_URL=http://strategy_ai_service:8003
+      - LEAD_SERVICE_URL=http://lead_enrichment_service:8004
+      - CAMPAIGN_SERVICE_URL=http://campaign_planner_service:8005
+      - ANALYTICS_SERVICE_URL=http://analytics_service:8006
+    depends_on:
+      - auth_service
+      - licensing_service
+      - strategy_ai_service
+      - lead_enrichment_service
+      - campaign_planner_service
+      - analytics_service
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Database Initialization
+  init_db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python services/init_db.py
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+    profiles:
+      - init
+
+  # Celery Worker for Background Tasks
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A services.shared.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+    networks:
+      - mai_network
+
+  # Celery Flower for Task Monitoring
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A services.shared.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - mai_network
+
+  # pgAdmin for Database Management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@aimarketer.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - mai_network
+
+volumes:
+  postgres_data:
+    driver: local
+  mongo_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  mai_network:
+    driver: bridge

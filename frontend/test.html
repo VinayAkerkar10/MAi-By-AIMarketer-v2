@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test - MAi UI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 40px;
+            background: #f0f0f0;
+        }
+        .test-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 600px;
+            margin: 0 auto;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #21808d; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+        .btn {
+            display: inline-block;
+            background: #21808d;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 10px 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-box">
+        <h1>🧪 MAi UI - File Test</h1>
+        <p>If you can see this, HTML is working!</p>
+        
+        <h2>File Check:</h2>
+        <div id="fileCheck">
+            <p>Checking files...</p>
+        </div>
+        
+        <h2>Next Steps:</h2>
+        <ol>
+            <li>If all files are ✅, click the button below</li>
+            <li>If files are ❌, make sure you're in the <code>frontend</code> folder</li>
+        </ol>
+        
+        <a href="standalone.html" class="btn">Open Standalone UI</a>
+        <a href="index.html" class="btn">Open Original UI</a>
+    </div>
+
+    <script>
+        const files = ['standalone.html', 'style.css', 'app.js', 'index.html'];
+        const checkDiv = document.getElementById('fileCheck');
+        
+        files.forEach(file => {
+            const img = new Image();
+            const link = document.createElement('a');
+            link.href = file;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            
+            fetch(file)
+                .then(response => {
+                    const p = document.createElement('p');
+                    if (response.ok) {
+                        p.innerHTML = `✅ <strong>${file}</strong> - Found`;
+                        p.className = 'success';
+                    } else {
+                        p.innerHTML = `❌ <strong>${file}</strong> - Not found (${response.status})`;
+                        p.className = 'error';
+                    }
+                    checkDiv.appendChild(p);
+                })
+                .catch(error => {
+                    const p = document.createElement('p');
+                    p.innerHTML = `❌ <strong>${file}</strong> - Error: ${error.message}`;
+                    p.className = 'error';
+                    checkDiv.appendChild(p);
+                });
+        });
+    </script>
+</body>
+</html>
