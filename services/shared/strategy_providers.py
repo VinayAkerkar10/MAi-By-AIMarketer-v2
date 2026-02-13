@@ -67,9 +67,27 @@ class OllamaStrategyProvider(StrategyProvider):
         
         # Build prompt for strategy generation
         prompt = self._build_strategy_prompt(business_profile, additional_context)
+        logger.debug(
+            "[OLLAMA_DEBUG] Preparing request: base_url=%s model=%s timeout=%s prompt_len=%d",
+            self.base_url,
+            self.model,
+            self.timeout,
+            len(prompt)
+        )
         
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            timeout = httpx.Timeout(
+                connect=30.0,
+                read=300.0,
+                write=300.0,
+                pool=30.0
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                logger.debug(
+                    "[OLLAMA_DEBUG] Calling Ollama: url=%s timeout=%s",
+                    f"{self.base_url}/api/generate",
+                    timeout
+                )
                 response = await client.post(
                     f"{self.base_url}/api/generate",
                     json={
@@ -78,14 +96,33 @@ class OllamaStrategyProvider(StrategyProvider):
                         "format": "json",
                         "stream": False,
                         "options": {
+                            "num_predict": 1200,
                             "temperature": 0.7,
-                            "top_p": 0.9,
-                            "max_tokens": 2000
+                            "top_p": 0.9
                         }
                     }
                 )
+                logger.debug(
+                    "[OLLAMA_DEBUG] Response meta: status=%s headers=%s text_len=%d",
+                    response.status_code,
+                    dict(response.headers),
+                    len(response.text or "")
+                )
+                if response.text:
+                    logger.debug(
+                        "[OLLAMA_DEBUG] Response text head(500)=%s",
+                        response.text[:500]
+                    )
+                    logger.debug(
+                        "[OLLAMA_DEBUG] Response text tail(500)=%s",
+                        response.text[-500:]
+                    )
                 response.raise_for_status()
                 result = response.json()
+                logger.debug(
+                    "[OLLAMA_DEBUG] Response JSON (truncated): %s",
+                    str(result)[:500]
+                )
                 
                 # Parse Ollama response (tolerate different response shapes)
                 strategy_text = result.get("response", "")
@@ -98,14 +135,24 @@ class OllamaStrategyProvider(StrategyProvider):
                         strategy_text = json.loads(strategy_text)
                     except json.JSONDecodeError:
                         pass
+                logger.debug(
+                    "[OLLAMA_DEBUG] Extracted response length: %d",
+                    len(strategy_text or "")
+                )
+                logger.debug(
+                    "[OLLAMA_DEBUG] Extracted strategy_text head(500)=%s",
+                    (strategy_text or "")[:500]
+                )
                 return self._parse_strategy_response(strategy_text, business_profile)
                 
         except httpx.RequestError as e:
             logger.error(f"Ollama request error: {e}")
-            return self._get_minimal_fallback_strategy(business_profile)
+            logger.warning("Fallback trigger condition: request_error")
+            return self._get_minimal_fallback_strategy(business_profile, reason="request_error")
         except Exception as e:
             logger.error(f"Ollama strategy generation error: {e}")
-            return self._get_minimal_fallback_strategy(business_profile)
+            logger.warning("Fallback trigger condition: generation_exception")
+            return self._get_minimal_fallback_strategy(business_profile, reason="generation_exception")
     
     def _build_strategy_prompt(
         self,
@@ -226,6 +273,7 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
         from json import JSONDecoder
         
         def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+            required_keys = {"recommended_channels"}
             text = text.strip()
             if not text:
                 return None
@@ -234,9 +282,20 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
             fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
             if fence_match:
                 try:
-                    return json.loads(fence_match.group(1))
+                    obj = json.loads(fence_match.group(1))
+                    if isinstance(obj, dict) and required_keys.issubset(obj.keys()):
+                        return obj
+                    if isinstance(obj, dict):
+                        missing = list(required_keys.difference(obj.keys()))
+                        logger.error(
+                            "[JSON_PARSE_DEBUG] Missing required keys in fenced JSON: %s",
+                            missing
+                        )
                 except json.JSONDecodeError:
+                    logger.error("[JSON_PARSE_DEBUG] json_decode_error in fenced JSON")
                     pass
+            else:
+                logger.debug("[JSON_PARSE_DEBUG] No JSON code fence found")
 
             # Try to decode from first JSON object in the text
             decoder = JSONDecoder()
@@ -244,9 +303,24 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
                 if ch == "{":
                     try:
                         obj, _ = decoder.raw_decode(text[idx:])
-                        if isinstance(obj, dict):
+                        if isinstance(obj, dict) and required_keys.issubset(obj.keys()):
                             return obj
+                        if isinstance(obj, dict):
+                            missing = list(required_keys.difference(obj.keys()))
+                            logger.error(
+                                "[JSON_PARSE_DEBUG] Missing required keys in decoded JSON: %s",
+                                missing
+                            )
                     except json.JSONDecodeError:
+                        # Log failure location and surrounding text
+                        fail_start = max(idx - 150, 0)
+                        fail_end = min(idx + 150, len(text))
+                        snippet = text[fail_start:fail_end]
+                        logger.error(
+                            "[JSON_PARSE_DEBUG] json_decode_error at index=%d snippet=%s",
+                            idx,
+                            snippet
+                        )
                         continue
             return None
 
@@ -280,14 +354,23 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
             return parsed_strategy
         else:
             logger.error("Failed to extract JSON from Ollama response")
-            logger.debug(f"Response text: {response_text[:500]}")
         
         # If parsing fails, try to get AI to fix it or use minimal fallback
         logger.warning("Failed to parse AI response, using minimal fallback")
-        return self._get_minimal_fallback_strategy(business_profile)
+        logger.warning("Fallback trigger condition: parse_failure")
+        return self._get_minimal_fallback_strategy(business_profile, reason="parse_failure")
     
-    def _get_minimal_fallback_strategy(self, business_profile: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_minimal_fallback_strategy(
+        self,
+        business_profile: Dict[str, Any],
+        reason: str = "unknown"
+    ) -> Dict[str, Any]:
         """Minimal fallback strategy if AI parsing completely fails"""
+        logger.warning(
+            "Returning minimal fallback strategy: provider=ollama_fallback model=%s reason=%s",
+            self.model,
+            reason
+        )
         return {
             "recommended_channels": ["Email", "LinkedIn", "Content Marketing"],
             "budget_allocation": {

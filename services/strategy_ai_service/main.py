@@ -11,6 +11,7 @@ import sys
 import os
 import logging
 
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,7 +116,7 @@ async def generate_marketing_strategy(
                 "model": ai_strategy.get("model", "unknown")
             }
         }
-        
+
         return {
             "success": True,
             "strategy": strategy,
@@ -148,7 +149,7 @@ async def get_available_providers(
         "provider_info": {
             "ollama": {
                 "type": "local",
-                "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+                "base_url": os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"),
                 "model": os.getenv("OLLAMA_STRATEGY_MODEL", "llama2")
             },
             "openai": {
@@ -180,6 +181,10 @@ async def get_strategy_history(
 @app.get("/api/health", tags=["Health"])
 async def health_check():
     """Health check endpoint"""
+    try:
+        logger.debug("[HEALTH_DEBUG] Health check requested")
+    except Exception:
+        pass
     return {
         "status": "healthy",
         "service": "strategy_ai_service",

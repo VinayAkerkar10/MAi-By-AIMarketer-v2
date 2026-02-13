@@ -94,8 +94,11 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - mai_network
-    profiles:
-      - ollama
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/11434'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     # Note: After starting, pull a model with: docker exec -it ollama ollama pull llama2
 
   # StrategyAI Service
@@ -117,8 +120,11 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
       - OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS:-2000}
       - CONFIG_DIR=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       postgres:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     volumes:
       - .:/app
