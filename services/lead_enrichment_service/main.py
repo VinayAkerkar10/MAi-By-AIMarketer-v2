@@ -82,21 +82,69 @@ async def start_lead_scraping(
 async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id: str):
     """Background task for lead scraping"""
     try:
-        # TODO: Integrate with Google Maps API, Outscraper, or Apify
-        # Placeholder implementation
-        sample_leads = [
-            {
-                "business_name": f"Tech Solutions {i}",
-                "address": f"{100 + i} Business St, {request.location}",
-                "phone": f"+1-555-{1000 + i}",
-                "email": f"contact@techsolutions{i}.com",
-                "website": f"https://techsolutions{i}.com",
-                "rating": round(3.5 + (i % 2) * 0.8, 1),
-                "category": request.business_type,
-                "scraped_at": datetime.utcnow().isoformat()
-            }
-            for i in range(min(request.max_results, 25))
-        ]
+        import httpx
+
+        try:
+            github_status_code = None
+            max_results = max(1, min(int(request.max_results or 1), 100))
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    "https://api.github.com/search/users",
+                    params={"q": request.business_type, "per_page": max_results},
+                )
+            github_status_code = response.status_code
+
+            if response.status_code in (403, 429):
+                raise Exception(f"GitHub API rate-limited or forbidden: {response.status_code}")
+            if response.status_code != 200:
+                raise Exception(f"GitHub API returned status {response.status_code}")
+
+            response_json = response.json()
+            items = response_json.get("items", []) if isinstance(response_json, dict) else []
+
+            sample_leads = []
+            for user in items:
+                if not isinstance(user, dict):
+                    continue
+
+                login = user.get("login")
+                html_url = user.get("html_url")
+                if not login or not html_url:
+                    continue
+
+                sample_leads.append(
+                    {
+                        "business_name": login,
+                        "address": "N/A",
+                        "phone": "N/A",
+                        "email": "N/A",
+                        "website": html_url,
+                        "rating": None,
+                        "category": request.business_type,
+                        "scraped_at": datetime.utcnow().isoformat(),
+                    }
+                )
+
+            if not sample_leads:
+                raise Exception("No valid users returned from GitHub API")
+
+        except Exception:
+            # TODO: Integrate with Google Maps API, Outscraper, or Apify
+            # Placeholder implementation
+            sample_leads = [
+                {
+                    "business_name": f"Tech Solutions {i}",
+                    "address": f"{100 + i} Business St, {request.location}",
+                    "phone": f"+1-555-{1000 + i}",
+                    "email": f"contact@techsolutions{i}.com",
+                    "website": f"https://techsolutions{i}.com",
+                    "rating": round(3.5 + (i % 2) * 0.8, 1),
+                    "category": request.business_type,
+                    "scraped_at": datetime.utcnow().isoformat()
+                }
+                for i in range(min(request.max_results, 25))
+            ]
         
         leads_data[task_id] = {
             "task_id": task_id,
