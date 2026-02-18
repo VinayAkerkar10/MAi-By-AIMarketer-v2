@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy.orm import Session
 from shared.database import get_db, UsageRecord, FeatureName
 from shared.auth import get_current_user, require_feature
+from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
 
 app = FastAPI(
     title="MAi Lead Enrichment Service",
@@ -84,6 +85,7 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
     try:
         import httpx
 
+
         try:
             github_status_code = None
             max_results = max(1, min(int(request.max_results or 1), 100))
@@ -93,43 +95,77 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
                     "https://api.github.com/search/users",
                     params={"q": request.business_type, "per_page": max_results},
                 )
-            github_status_code = response.status_code
+                github_status_code = response.status_code
 
-            if response.status_code in (403, 429):
-                raise Exception(f"GitHub API rate-limited or forbidden: {response.status_code}")
-            if response.status_code != 200:
-                raise Exception(f"GitHub API returned status {response.status_code}")
+                if response.status_code in (403, 429):
+                    raise Exception(f"GitHub API rate-limited or forbidden: {response.status_code}")
+                if response.status_code != 200:
+                    raise Exception(f"GitHub API returned status {response.status_code}")
 
-            response_json = response.json()
-            items = response_json.get("items", []) if isinstance(response_json, dict) else []
+                response_json = response.json()
+                items = response_json.get("items", []) if isinstance(response_json, dict) else []
 
-            sample_leads = []
-            for user in items:
-                if not isinstance(user, dict):
-                    continue
+                sample_leads = []
+                for user in items:
+                    if not isinstance(user, dict):
+                        continue
 
-                login = user.get("login")
-                html_url = user.get("html_url")
-                if not login or not html_url:
-                    continue
+                    login = user.get("login")
+                    html_url = user.get("html_url")
+                    if not login or not html_url:
+                        continue
 
-                sample_leads.append(
-                    {
-                        "business_name": login,
-                        "address": "N/A",
-                        "phone": "N/A",
-                        "email": "N/A",
-                        "website": html_url,
-                        "rating": None,
-                        "category": request.business_type,
-                        "scraped_at": datetime.utcnow().isoformat(),
-                    }
-                )
+                    posts = []
+
+                    user_details_response = await client.get(
+                        f"https://api.github.com/users/{login}"
+                    )
+                    if user_details_response.status_code == 200:
+                        user_details = user_details_response.json()
+                        if isinstance(user_details, dict):
+                            bio = user_details.get("bio")
+                            if bio:
+                                posts.append({"text": bio, "source": "bio"})
+
+                    repos_response = await client.get(
+                        f"https://api.github.com/users/{login}/repos",
+                        params={"per_page": 5},
+                    )
+                    if repos_response.status_code == 200:
+                        repos_data = repos_response.json()
+                        if isinstance(repos_data, list):
+                            for repo in repos_data:
+                                if not isinstance(repo, dict):
+                                    continue
+                                description = repo.get("description")
+                                if description:
+                                    posts.append({"text": description, "source": "repo"})
+
+                    ranked_posts = rank_posts_for_lead(
+                        {"business_name": login},
+                        posts,
+                        request.location,
+                        request.business_type,
+                    )
+
+                    sample_leads.append(
+                        {
+                            "business_name": login,
+                            "address": "N/A",
+                            "phone": "N/A",
+                            "email": "N/A",
+                            "website": html_url,
+                            "rating": None,
+                            "category": request.business_type,
+                            "scraped_at": datetime.utcnow().isoformat(),
+                            "ranked_posts": ranked_posts,
+                        }
+                    )
 
             if not sample_leads:
                 raise Exception("No valid users returned from GitHub API")
 
-        except Exception:
+        except Exception as e:
             # TODO: Integrate with Google Maps API, Outscraper, or Apify
             # Placeholder implementation
             sample_leads = [
@@ -145,7 +181,7 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
                 }
                 for i in range(min(request.max_results, 25))
             ]
-        
+
         leads_data[task_id] = {
             "task_id": task_id,
             "organization_id": org_id,
