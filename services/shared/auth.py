@@ -13,9 +13,37 @@ import os
 from .database import get_db, User, Organization, License, LicenseStatus, UserRole, FeatureName
 
 # JWT Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+APP_ENV = os.getenv("ENV", "production").lower()
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY is required and must be set in environment.")
+
+INSECURE_JWT_SECRETS = {
+    "your-secret-key",
+    "your-secret-key-change-in-production",
+    "your-jwt-secret-key-here",
+    "changeme",
+    "default",
+    "secret",
+}
+if APP_ENV != "development" and JWT_SECRET_KEY in INSECURE_JWT_SECRETS:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is insecure for non-development environments. "
+        "Set a strong secret value."
+    )
+
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
+
+jwt_expire_raw = os.getenv("JWT_EXPIRE_MINUTES")
+if jwt_expire_raw is None:
+    raise RuntimeError("JWT_EXPIRE_MINUTES is required and must be set in environment.")
+try:
+    JWT_EXPIRE_MINUTES = int(jwt_expire_raw)
+    if JWT_EXPIRE_MINUTES <= 0:
+        raise ValueError
+except ValueError:
+    raise RuntimeError("JWT_EXPIRE_MINUTES must be a positive integer.")
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

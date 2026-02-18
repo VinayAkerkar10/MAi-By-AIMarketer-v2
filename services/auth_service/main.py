@@ -34,7 +34,8 @@ def ensure_db_initialized():
     from shared.database import init_db
     init_db()
     initialize_feature_matrix()
-    seed_default_org_user_license()
+    if os.getenv("ENABLE_SEED_DATA", "false").lower() == "true":
+        seed_default_org_user_license()
 
 app.add_middleware(
     CORSMiddleware,

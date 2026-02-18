@@ -41,9 +41,14 @@ def initialize_feature_matrix():
         db.close()
 
 def seed_default_org_user_license():
-    """Seed a minimal default org/admin/license if none exist"""
+    """Seed a minimal default org/admin/license if enabled"""
+    if os.getenv("ENABLE_SEED_DATA", "false").lower() != "true":
+        print("Seed data disabled (ENABLE_SEED_DATA is not true); skipping seeding.")
+        return
+
     db = SessionLocal()
     try:
+        app_env = os.getenv("ENV", "production").lower()
         org_name = os.getenv("SEED_ORG_NAME", "DefaultOrg")
         org = db.query(Organization).filter(Organization.name == org_name).first()
         if org:
@@ -59,7 +64,16 @@ def seed_default_org_user_license():
             db.refresh(org)
 
         admin_user_id = os.getenv("SEED_ADMIN_USER_ID", "admin")
-        admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin123")
+        admin_password = os.getenv("SEED_ADMIN_PASSWORD")
+        if not admin_password:
+            if app_env == "development":
+                admin_password = "admin123"
+                print("WARNING: Using development fallback seed admin password.")
+            else:
+                raise RuntimeError(
+                    "SEED_ADMIN_PASSWORD is required when ENABLE_SEED_DATA=true "
+                    "outside development."
+                )
         license_type_str = os.getenv("SEED_LICENSE_TYPE", "full_suite")
         license_period_str = os.getenv("SEED_LICENSE_PERIOD", "monthly")
         max_users = int(os.getenv("SEED_MAX_USERS", "10"))
@@ -127,6 +141,10 @@ if __name__ == "__main__":
     
     print("Initializing feature matrix...")
     initialize_feature_matrix()
-    print("Seeding default org/admin/license...")
-    seed_default_org_user_license()
+
+    if os.getenv("ENABLE_SEED_DATA", "false").lower() == "true":
+        print("Seeding default org/admin/license...")
+        seed_default_org_user_license()
+    else:
+        print("Skipping seed data (ENABLE_SEED_DATA is not true).")
     print("Database initialization complete!")
