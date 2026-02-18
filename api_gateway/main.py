@@ -31,26 +31,41 @@ SERVICE_URLS = {
     "analytics": os.getenv("ANALYTICS_SERVICE_URL", "http://analytics_service:8006"),
 }
 
+SERVICE_ALIASES = {
+    "admin": "auth",
+    "enrichment": "leads",
+}
+
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_request(service: str, path: str, request: Request):
     """Proxy requests to appropriate microservice. Path is preserved so that
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
-    if service not in SERVICE_URLS:
+    resolved_service = SERVICE_ALIASES.get(service, service)
+
+    if resolved_service not in SERVICE_URLS:
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
-    
-    service_url = SERVICE_URLS[service]
+
+    service_url = SERVICE_URLS[resolved_service]
     # Preserve full path: /api/{service}/{path} -> service_url/api/{service}/{path}
     url = f"{service_url}/api/{service}/{path}"
-    
+
     # Forward headers
     headers = dict(request.headers)
     headers.pop("host", None)
-    
+
+    # Redact authorization value for logs
+    logged_headers = {}
+    for key, value in headers.items():
+        if key.lower() == "authorization":
+            logged_headers[key] = "[REDACTED]"
+        else:
+            logged_headers[key] = value
+
     # Get request body if present
     body = None
     if request.method in ["POST", "PUT", "PATCH"]:
         body = await request.body()
-    
+
     # Make request to microservice
     async with httpx.AsyncClient() as client:
         try:
@@ -64,11 +79,11 @@ async def proxy_request(service: str, path: str, request: Request):
             )
         except httpx.RequestError as e:
             raise HTTPException(status_code=503, detail=f"Service unavailable: {str(e)}")
-    
+
     # Forward status code and body; support both JSON and non-JSON responses
     status_code = response.status_code
     content_type = response.headers.get("content-type", "")
-    
+
     if "application/json" in content_type:
         try:
             content = response.json()
