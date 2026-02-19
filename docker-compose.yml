@@ -300,6 +300,15 @@ services:
     networks:
       - mai_network
 
+  mailhog:
+    image: mailhog/mailhog
+    container_name: marketing-app-main-mailhog-1
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    networks:
+      - mai_network
+
 volumes:
   postgres_data:
     driver: local

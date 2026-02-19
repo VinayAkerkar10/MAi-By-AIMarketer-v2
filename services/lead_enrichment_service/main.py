@@ -231,6 +231,24 @@ async def get_scraped_leads(
         "data": task_data
     }
 
+@app.get("/api/leads/tasks", tags=["Lead Generation"])
+async def list_scraped_lead_tasks(
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+    db: Session = Depends(get_db)
+):
+    """List all lead scraping tasks for organization"""
+    org_id = current_user["organization_id"]
+    tasks = [
+        task_data
+        for task_data in leads_data.values()
+        if task_data.get("organization_id") == org_id
+    ]
+
+    return {
+        "success": True,
+        "tasks": tasks
+    }
+
 # ===== DATA ENRICHMENT =====
 
 @app.post("/api/enrichment/upload", tags=["Data Enrichment"])
@@ -348,6 +366,24 @@ async def get_enrichment_status(
     return {
         "success": True,
         "status": task_data
+    }
+
+@app.get("/api/enrichment/tasks", tags=["Data Enrichment"])
+async def list_enrichment_tasks(
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+    db: Session = Depends(get_db)
+):
+    """List all enrichment tasks for organization"""
+    org_id = current_user["organization_id"]
+    tasks = [
+        task_data
+        for task_data in enriched_customers.values()
+        if task_data.get("organization_id") == org_id
+    ]
+
+    return {
+        "success": True,
+        "tasks": tasks
     }
 
 def _record_usage(db: Session, org_id: str, feature: FeatureName):

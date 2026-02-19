@@ -1305,6 +1305,19 @@ function setupCampaignManagerListeners() {
     }
     
     // Load active campaigns
+    loadCampaigns();
+}
+
+async function loadCampaigns() {
+    try {
+        const response = await apiRequest('/api/campaigns');
+        appData.campaigns = Array.isArray(response?.campaigns) ? response.campaigns : [];
+        saveDataToStorage();
+    } catch (error) {
+        console.error('Campaign loading error:', error);
+        appData.campaigns = [];
+    }
+
     displayActiveCampaigns();
 }
 
@@ -1376,6 +1389,7 @@ function generateContentForms() {
 async function createCampaign() {
     const campaignName = document.getElementById('campaignName');
     const campaignObjective = document.getElementById('campaignObjective');
+    const audienceSource = document.getElementById('audienceSource');
     
     if (!campaignName || !campaignObjective) return;
     
@@ -1403,30 +1417,16 @@ async function createCampaign() {
             campaign_name: campaignName.value,
             channels: selectedChannels,
             target_audience: campaignObjective.value,
+            audience_source: audienceSource?.value || 'scraped_leads',
             content: JSON.stringify(channelContent),
             schedule_date: null,
             budget: null
         };
 
-        const createResponse = await apiRequest('/api/campaigns/create', 'POST', payload);
+        console.log('[campaign_debug] createCampaign payload:', payload);
+        await apiRequest('/api/campaigns/create', 'POST', payload);
 
-        // Store full backend response + UI metadata for dynamic rendering
-        const campaign = {
-            ...createResponse,
-            id: createResponse.campaign_id || createResponse.id || Date.now(),
-            name: createResponse.campaign_name || campaignName.value,
-            objective: createResponse.target_audience || campaignObjective.value,
-            channels: Array.isArray(createResponse.channels) ? createResponse.channels : selectedChannels,
-            content: createResponse.content ?? payload.content,
-            schedule_date: createResponse.schedule_date ?? payload.schedule_date,
-            budget: createResponse.budget ?? payload.budget,
-            status: createResponse.status || 'Draft',
-            created: new Date().toLocaleDateString(),
-            metrics: createResponse.metrics || { sent: 0, opened: 0, clicked: 0, converted: 0 }
-        };
-
-        appData.campaigns.push(campaign);
-        saveDataToStorage();
+        const createdCampaignName = campaignName.value;
 
         nextWizardStep(1);
         const form = document.getElementById('campaignDetailsForm');
@@ -1434,9 +1434,9 @@ async function createCampaign() {
 
         showCampaignTab('active');
         setActiveCampaignTab(document.querySelector('[data-tab="active"]'));
-        displayActiveCampaigns();
+        await loadCampaigns();
 
-        showSuccessMessage(`Campaign "${campaign.name}" created successfully!`);
+        showSuccessMessage(`Campaign "${createdCampaignName}" created successfully!`);
     } catch (error) {
         console.error('Campaign creation error:', error);
         showErrorMessage(error.message || 'Failed to create campaign.');
@@ -1462,6 +1462,12 @@ function displayActiveCampaigns() {
         if (typeof value === 'object') return JSON.stringify(value);
         return String(value);
     };
+
+    const escapeAttr = (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 
     const parseContent = (rawContent) => {
         if (!rawContent) return [];
@@ -1545,26 +1551,65 @@ function displayActiveCampaigns() {
                     </div>
                 </div>
                 <div class="campaign-card__actions">
-                    <button class="btn btn--sm btn--secondary" onclick="editCampaign(${campaignId})">Edit</button>
-                    <button class="btn btn--sm btn--outline" onclick="pauseCampaign(${campaignId})">Pause</button>
+                    <button class="btn btn--sm btn--secondary edit-btn" data-id="${escapeAttr(String(campaignId))}">Edit</button>
+                    <button class="btn btn--sm btn--outline pause-btn" data-id="${escapeAttr(String(campaignId))}">Pause</button>
                 </div>
             </div>
         </div>
         `;
     }).join('');
+
+    campaignsGrid.querySelectorAll('.edit-btn').forEach(button => {
+        button.addEventListener('click', () => {
+            editCampaign(button.dataset.id);
+        });
+    });
+
+    campaignsGrid.querySelectorAll('.pause-btn').forEach(button => {
+        button.addEventListener('click', () => {
+            pauseCampaign(button.dataset.id);
+        });
+    });
 }
 
-function editCampaign(campaignId) {
-    showSuccessMessage('Campaign editing feature coming soon! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
+async function editCampaign(campaignId) {
+    const campaign = appData.campaigns.find(c => String(c.campaign_id || c.id) === String(campaignId));
+    const currentName = campaign?.campaign_name || campaign?.name || '';
+    const nextName = prompt('Edit campaign name', currentName);
+
+    if (nextName === null) {
+        return;
+    }
+
+    const updatedName = nextName.trim();
+    if (!updatedName) {
+        showErrorMessage('Campaign name cannot be empty.');
+        return;
+    }
+
+    try {
+        await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}`, 'PUT', {
+            campaign_name: updatedName
+        });
+
+        await loadCampaigns();
+        showSuccessMessage('Campaign updated successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
+    } catch (error) {
+        console.error('Campaign update error:', error);
+        showErrorMessage(error.message || 'Failed to update campaign.');
+    }
 }
 
-function pauseCampaign(campaignId) {
-    const campaign = appData.campaigns.find(c => c.id === campaignId);
-    if (campaign) {
-        campaign.status = campaign.status === 'Active' ? 'Paused' : 'Active';
-        saveDataToStorage();
-        displayActiveCampaigns();
-        showSuccessMessage(`Campaign ${campaign.status.toLowerCase()}! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.`);
+async function pauseCampaign(campaignId) {
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/pause`, 'POST', {});
+        await loadCampaigns();
+
+        const newStatus = response?.campaign?.status || 'updated';
+        showSuccessMessage(`Campaign ${String(newStatus).toLowerCase()}! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.`);
+    } catch (error) {
+        console.error('Campaign pause error:', error);
+        showErrorMessage(error.message || 'Failed to update campaign status.');
     }
 }
 

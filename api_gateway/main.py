@@ -35,8 +35,9 @@ SERVICE_ALIASES = {
     "admin": "auth",
 }
 
+@app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_request(service: str, path: str, request: Request):
+async def proxy_request(service: str, request: Request, path: str = ""):
     """Proxy requests to appropriate microservice. Path is preserved so that
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
     resolved_service = SERVICE_ALIASES.get(service, service)
@@ -48,8 +49,11 @@ async def proxy_request(service: str, path: str, request: Request):
     else:
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
 
-    # Use resolved service path: /api/{service}/{path} -> service_url/api/{resolved_service}/{path}
-    url = f"{service_url}/api/{resolved_service}/{path}"
+    # Preserve route shape without forcing a trailing slash when path is empty
+    if path:
+        url = f"{service_url}/api/{resolved_service}/{path}"
+    else:
+        url = f"{service_url}/api/{resolved_service}"
 
     # Forward headers
     headers = dict(request.headers)
