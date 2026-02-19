@@ -191,6 +191,14 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat()
     }
 
+@app.get("/health", tags=["Health"])
+async def basic_health_check():
+    """Basic unauthenticated health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "strategy_ai_service"
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8003, reload=True)

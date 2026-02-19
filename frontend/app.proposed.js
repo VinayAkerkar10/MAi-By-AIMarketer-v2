@@ -551,11 +551,11 @@ async function generateAIStrategy() {
         };
 
         const response = await apiRequest('/api/strategy/generate', 'POST', payload);
-        const strategy = response?.strategy || {};
+        const normalizedStrategy = normalizeStrategyForDisplay(response.strategy || {});
 
-        appData.generatedStrategy = strategy;
+        appData.generatedStrategy = normalizedStrategy;
         saveDataToStorage();
-        displayStrategyResults(strategy);
+        displayStrategyResults(normalizedStrategy);
 
         loadingDiv.classList.add('hidden');
         resultsDiv.classList.remove('hidden');
@@ -606,106 +606,50 @@ function generateStrategyRecommendations() {
 }
 
 function displayStrategyResults(strategy) {
-    const safeArray = (v) => Array.isArray(v) ? v : [];
-    const safeObject = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
-    const renderList = (arr, className, emptyMsg) =>
-        arr.length ? arr.map(item => `<div class="${className}">${item}</div>`).join('') : `<div class="${className}">${emptyMsg}</div>`;
-
-    // 1) Recommended channels
+    // Display channels
     const channelGrid = document.getElementById('channelRecommendations');
     if (channelGrid) {
-        const channels = safeArray(strategy.recommended_channels);
-        channelGrid.innerHTML = channels.length
-            ? channels.map(channel => `
-                <div class="channel-card">
-                    <h4>${channel}</h4>
-                    <p>Recommended for your business profile</p>
-                </div>
-            `).join('')
-            : `<div class="channel-card"><h4>No channels available</h4><p>Strategy response did not include channel recommendations.</p></div>`;
+        channelGrid.innerHTML = strategy.channels.map(channel => `
+            <div class="channel-card">
+                <h4>${channel}</h4>
+                <p>Recommended for your industry</p>
+            </div>
+        `).join('');
     }
-
-    // 2) Budget allocation + 3) Budget analysis
+    
+    // Display budget allocation
     const budgetDiv = document.getElementById('budgetAllocation');
     if (budgetDiv) {
-        const allocation = safeObject(strategy.budget_allocation);
-        const allocationHtml = Object.entries(allocation).length
-            ? Object.entries(allocation).map(([key, value]) => `
-                <div class="budget-item">
-                    <strong>${formatStrategyKey(key)}:</strong> ${value ?? 0}%
-                </div>
-            `).join('')
-            : `<div class="budget-item">Budget allocation not available.</div>`;
-
-        const analysis = safeObject(strategy.budget_analysis);
-        const competitor = safeObject(analysis.competitor_benchmark);
-        const recommendations = safeArray(analysis.budget_recommendations);
-
-        const analysisHtml = Object.keys(analysis).length
-            ? `
-                <div class="budget-item"><strong>Recommended Budget Range:</strong> ${analysis.recommended_budget_range || 'N/A'}</div>
-                <div class="budget-item"><strong>Budget Assessment:</strong> ${analysis.budget_assessment || 'N/A'}</div>
-                <div class="budget-item"><strong>Budget Recommendations:</strong> ${recommendations.length ? recommendations.join(', ') : 'N/A'}</div>
-                <div class="budget-item"><strong>Competitor Benchmark:</strong> ${
-                    Object.keys(competitor).length
-                        ? Object.entries(competitor).map(([k, v]) => `${formatStrategyKey(k)}: ${v}`).join(' | ')
-                        : 'N/A'
-                }</div>
-            `
-            : `<div class="budget-item">Budget analysis not available.</div>`;
-
-        budgetDiv.innerHTML = allocationHtml + analysisHtml;
+        budgetDiv.innerHTML = Object.entries(strategy.budgetAllocation).map(([channel, percentage]) => `
+            <div class="budget-item">
+                <strong>${channel}:</strong> ${percentage} ($${Math.round((parseFloat(percentage) / 100) * strategy.targetBudget).toLocaleString()})
+            </div>
+        `).join('');
     }
-
-    // 4) Campaign timeline (dynamic phases only)
+    
+    // Display timeline
     const timelineDiv = document.getElementById('campaignTimeline');
     if (timelineDiv) {
-        const timeline = safeObject(strategy.campaign_timeline);
-        const phases = Object.entries(timeline);
-
-        timelineDiv.innerHTML = phases.length
-            ? phases.map(([phaseKey, phaseValue]) => {
-                const phase = safeObject(phaseValue);
-                const activities = safeArray(phase.key_activities);
-                return `
-                    <div class="timeline-item">
-                        <strong>${phase.name || formatStrategyKey(phaseKey)}</strong>
-                        <div>Duration: ${phase.duration || 'N/A'}</div>
-                        <div>${phase.description || 'No description provided.'}</div>
-                        <div>Activities: ${activities.length ? activities.join(', ') : 'N/A'}</div>
-                    </div>
-                `;
-            }).join('')
-            : `<div class="timeline-item">Campaign timeline not available.</div>`;
+        timelineDiv.innerHTML = `<div class="timeline-item">${strategy.timeline}</div>`;
     }
-
-    // 5) Target segments + insights + provider info
+    
+    // Display key messaging
     const messagingDiv = document.getElementById('keyMessaging');
     if (messagingDiv) {
-        const segments = safeArray(strategy.target_segments);
-        const providerInfo = safeObject(strategy.provider_info);
-
-        messagingDiv.innerHTML = `
-            ${renderList(segments, 'message-item', 'Target segments not available.')}
-            <div class="message-item"><strong>Insights:</strong> ${strategy.insights || 'No insights provided.'}</div>
-            <div class="message-item"><strong>Provider:</strong> ${providerInfo.provider || 'unknown'}</div>
-            <div class="message-item"><strong>Model:</strong> ${providerInfo.model || 'unknown'}</div>
-        `;
+        messagingDiv.innerHTML = strategy.keyMessages.map(message => `
+            <div class="message-item">${message}</div>
+        `).join('');
     }
-
-    // 6) Content strategy + KPIs
+    
+    // Display content strategy
     const contentDiv = document.getElementById('contentStrategy');
     if (contentDiv) {
-        const contentStrategy = safeArray(strategy.content_strategy);
-        const kpis = safeArray(strategy.kpis);
-
-        contentDiv.innerHTML = `
-            ${renderList(contentStrategy, 'content-item', 'Content strategy not available.')}
-            ${kpis.length ? `<div class="content-item"><strong>KPIs:</strong> ${kpis.join(', ')}</div>` : `<div class="content-item">KPIs not available.</div>`}
-        `;
+        contentDiv.innerHTML = strategy.contentStrategy.map(content => `
+            <div class="content-item">${content}</div>
+        `).join('');
     }
-
-    // Export button unchanged
+    
+    // Setup export button
     const exportBtn = document.getElementById('exportStrategy');
     if (exportBtn) {
         exportBtn.onclick = () => {
@@ -765,26 +709,19 @@ async function startLeadScraping(params) {
         if (progressFill) progressFill.style.width = '40%';
         if (progressText) progressText.textContent = '40%';
 
-        const POLL_INTERVAL_MS = 1000;
-        const MAX_POLL_ATTEMPTS = 180; // 3 minutes
-
         let taskData = null;
-        for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-            await sleep(POLL_INTERVAL_MS);
+        for (let attempt = 0; attempt < 15; attempt++) {
+            await sleep(1000);
             const statusResponse = await apiRequest(`/api/leads/${taskId}`);
             taskData = statusResponse.data;
 
-            const pct = Math.min(95, 40 + Math.floor(((attempt + 1) / MAX_POLL_ATTEMPTS) * 55));
+            const pct = Math.min(95, 40 + (attempt + 1) * 4);
             if (progressFill) progressFill.style.width = `${pct}%`;
             if (progressText) progressText.textContent = `${pct}%`;
 
-            if (taskData?.status === 'completed') {
+            if (taskData?.status === 'completed' || taskData?.status === 'failed') {
                 break;
             }
-            if (taskData?.status === 'failed') {
-                break;
-            }
-            // status === "processing" => continue polling
         }
 
         if (!taskData || taskData.status !== 'completed') {
@@ -818,95 +755,23 @@ async function startLeadScraping(params) {
 function displayScrapedLeads(leads) {
     const tbody = document.getElementById('leadsTableBody');
     if (!tbody) return;
-
-    const safeLeads = Array.isArray(leads) ? leads : [];
-
-    const escapeHtml = (value) => String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-
-    const titleize = (key) => String(key || '')
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, c => c.toUpperCase());
-
-    const formatValue = (value) => {
-        if (value === null || value === undefined || value === '') return 'N/A';
-        if (Array.isArray(value)) {
-            if (value.length === 0) return 'N/A';
-            return value.map(item => formatValue(item)).join('<br>');
-        }
-        if (typeof value === 'object') {
-            const entries = Object.entries(value);
-            if (entries.length === 0) return 'N/A';
-            return entries
-                .map(([k, v]) => `<div><strong>${escapeHtml(titleize(k))}:</strong> ${formatValue(v)}</div>`)
-                .join('');
-        }
-        return escapeHtml(value);
-    };
-
-    const getFirstAvailable = (lead, keys, fallback = 'N/A') => {
-        for (const key of keys) {
-            const val = lead?.[key];
-            if (val !== undefined && val !== null && val !== '') return val;
-        }
-        return fallback;
-    };
-
-    const renderWebsite = (value) => {
-        if (value === null || value === undefined || value === '') return 'N/A';
-        const website = Array.isArray(value) ? value[0] : value;
-        if (!website || typeof website !== 'string') return escapeHtml(formatValue(value));
-        const href = website.startsWith('http') ? website : `http://${website}`;
-        return `<a href="${escapeHtml(href)}" target="_blank">${escapeHtml(website)}</a>`;
-    };
-
-    tbody.innerHTML = safeLeads.map((leadRaw) => {
-        const lead = (leadRaw && typeof leadRaw === 'object') ? leadRaw : {};
-
-        const businessName = getFirstAvailable(lead, ['business_name', 'businessName', 'name', 'login']);
-        const address = getFirstAvailable(lead, ['address', 'location', 'formatted_address']);
-        const phone = formatValue(getFirstAvailable(lead, ['phone', 'phones', 'contact_numbers']));
-        const websiteValue = getFirstAvailable(lead, ['website', 'websites', 'url', 'html_url']);
-        const rating = getFirstAvailable(lead, ['rating', 'score', 'stars'], 'N/A');
-        const category = getFirstAvailable(lead, ['category', 'business_type', 'type'], 'N/A');
-
-        const knownKeys = new Set([
-            'business_name', 'businessName', 'name', 'login',
-            'address', 'location', 'formatted_address',
-            'phone', 'phones', 'contact_numbers',
-            'website', 'websites', 'url', 'html_url',
-            'rating', 'score', 'stars',
-            'category', 'business_type', 'type'
-        ]);
-
-        const extraFields = Object.entries(lead)
-            .filter(([k]) => !knownKeys.has(k))
-            .map(([k, v]) => `<div><strong>${escapeHtml(titleize(k))}:</strong> ${formatValue(v)}</div>`)
-            .join('');
-
-        return `
-            <tr>
-                <td>
-                    <strong>${escapeHtml(businessName)}</strong>
-                    ${extraFields ? `<div style="margin-top:6px; font-size:12px;">${extraFields}</div>` : ''}
-                </td>
-                <td>${formatValue(address)}</td>
-                <td>${phone}</td>
-                <td>${renderWebsite(websiteValue)}</td>
-                <td>${rating === 'N/A' ? 'N/A' : escapeHtml(rating)}</td>
-                <td><span class="status status--info">${escapeHtml(category)}</span></td>
-            </tr>
-        `;
-    }).join('');
-
+    
+    tbody.innerHTML = leads.map(lead => `
+        <tr>
+            <td><strong>${lead.businessName}</strong></td>
+            <td>${lead.address}</td>
+            <td>${lead.phone}</td>
+            <td><a href="${String(lead.website).startsWith('http') ? lead.website : `http://${lead.website}`}" target="_blank">${lead.website}</a></td>
+            <td>⭐ ${lead.rating}</td>
+            <td><span class="status status--info">${lead.category}</span></td>
+        </tr>
+    `).join('');
+    
+    // Setup export functionality
     const exportBtn = document.getElementById('exportLeads');
     if (exportBtn) {
         exportBtn.onclick = () => {
-            exportLeadsToCSV(safeLeads);
+            exportLeadsToCSV(leads);
         };
     }
 }

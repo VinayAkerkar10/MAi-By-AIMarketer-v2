@@ -46,8 +46,8 @@ async def proxy_request(service: str, path: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
 
     service_url = SERVICE_URLS[resolved_service]
-    # Preserve full path: /api/{service}/{path} -> service_url/api/{service}/{path}
-    url = f"{service_url}/api/{service}/{path}"
+    # Use resolved service path: /api/{service}/{path} -> service_url/api/{resolved_service}/{path}
+    url = f"{service_url}/api/{resolved_service}/{path}"
 
     # Forward headers
     headers = dict(request.headers)
@@ -61,13 +61,26 @@ async def proxy_request(service: str, path: str, request: Request):
         else:
             logged_headers[key] = value
 
+    # Inter-service routing diagnostics
+    print(f"[Gateway Routing] service={service}")
+    print(f"[Gateway Routing] resolved_service={resolved_service}")
+    print(f"[Gateway Routing] service_url={service_url}")
+    print(f"[Gateway Routing] upstream_url={url}")
+
     # Get request body if present
     body = None
     if request.method in ["POST", "PUT", "PATCH"]:
         body = await request.body()
 
     # Make request to microservice
-    async with httpx.AsyncClient() as client:
+    timeout = httpx.Timeout(
+        timeout=None,
+        connect=30.0,
+        read=None,
+        write=30.0,
+        pool=None
+    )
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             response = await client.request(
                 method=request.method,
@@ -75,10 +88,13 @@ async def proxy_request(service: str, path: str, request: Request):
                 headers=headers,
                 content=body,
                 params=dict(request.query_params),
-                timeout=30.0
             )
         except httpx.RequestError as e:
             raise HTTPException(status_code=503, detail=f"Service unavailable: {str(e)}")
+
+    # Upstream diagnostics
+    print(f"[Gateway Upstream] status={response.status_code}")
+    print(f"[Gateway Upstream] body={response.text[:500]}")
 
     # Forward status code and body; support both JSON and non-JSON responses
     status_code = response.status_code
@@ -113,3 +129,5 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
+

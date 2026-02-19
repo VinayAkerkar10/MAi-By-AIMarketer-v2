@@ -62,6 +62,17 @@ async def start_lead_scraping(
         
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
+
+        # Create task record immediately so GET /api/leads/{task_id} never 404s due to timing
+        leads_data[task_id] = {
+            "task_id": task_id,
+            "organization_id": current_user["organization_id"],
+            "status": "processing",
+            "leads": [],
+            "total_found": 0,
+            "search_params": request.dict(),
+            "created_at": datetime.utcnow().isoformat()
+        }
         
         # Start background task
         background_tasks.add_task(
@@ -79,6 +90,7 @@ async def start_lead_scraping(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start lead scraping: {str(e)}")
+
 
 async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id: str):
     """Background task for lead scraping"""

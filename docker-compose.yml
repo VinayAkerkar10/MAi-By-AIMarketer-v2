@@ -57,7 +57,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_EXPIRE_MINUTES=30
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
     depends_on:
       postgres:
@@ -78,6 +78,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
     depends_on:
       postgres:
@@ -114,6 +115,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
+      - ENV=${ENV:-development}
       - STRATEGY_PROVIDER=${STRATEGY_PROVIDER:-auto}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
       - OLLAMA_STRATEGY_MODEL=${OLLAMA_STRATEGY_MODEL:-llama2}
@@ -123,7 +126,6 @@ services:
       - OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS:-2000}
       - CONFIG_DIR=/app/config
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - ENV=${ENV:-development}
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,10 +147,11 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
+      - ENV=${ENV:-development}
       - CLEARBIT_API_KEY=${CLEARBIT_API_KEY}
       - HUNTER_IO_API_KEY=${HUNTER_IO_API_KEY}
       - OUTSCRAPER_API_KEY=${OUTSCRAPER_API_KEY}
-      - ENV=${ENV:-development}
     depends_on:
       postgres:
         condition: service_healthy
@@ -168,12 +171,13 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
+      - ENV=${ENV:-development}
       - SENDGRID_API_KEY=${SENDGRID_API_KEY}
       - FACEBOOK_ACCESS_TOKEN=${FACEBOOK_ACCESS_TOKEN}
       - LINKEDIN_ACCESS_TOKEN=${LINKEDIN_ACCESS_TOKEN}
       - TWITTER_ACCESS_TOKEN=${TWITTER_ACCESS_TOKEN}
       - WHATSAPP_ACCESS_TOKEN=${WHATSAPP_ACCESS_TOKEN}
-      - ENV=${ENV:-development}
     depends_on:
       postgres:
         condition: service_healthy
@@ -193,6 +197,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
     depends_on:
       postgres:
@@ -237,6 +242,8 @@ services:
     command: python services/init_db.py
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
     depends_on:
       postgres:
