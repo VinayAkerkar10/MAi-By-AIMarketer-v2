@@ -42,23 +42,78 @@ let appData = {
             content: "Hello [Name],\n\nI noticed your expertise in financial services and thought you might be interested in our recent case study showing how we helped a fintech company increase their qualified leads by 150%.\n\nWould love to connect!\n\n[Your Name]\n\nCreated by Mrityunjay Pandey, AIMarketer Pvt. Ltd."
         }
     ],
-    analytics: {
-        totalLeads: 1247,
-        activeCampaigns: 8,
-        conversionRate: 3.2,
-        roi: 285,
-        monthlyMetrics: [
-            { month: "Jan", leads: 120, conversions: 4 },
-            { month: "Feb", leads: 145, conversions: 6 },
-            { month: "Mar", leads: 167, conversions: 8 },
-            { month: "Apr", leads: 198, conversions: 12 },
-            { month: "May", leads: 223, conversions: 15 }
-        ]
-    }
 };
 
 const BASE_API_URL = "http://localhost:8000";
 const TOKEN_STORAGE_KEY = "access_token";
+let analyticsRequestVersion = 0;
+
+
+const DEFAULT_ANALYTICS_VIEW_MODEL = {
+    totalLeads: 0,
+    activeCampaigns: 0,
+    conversionRate: 0,
+    roi: 0,
+    monthlyMetrics: [
+        { month: 'Jan', leads: 0, conversions: 0 },
+        { month: 'Feb', leads: 0, conversions: 0 },
+        { month: 'Mar', leads: 0, conversions: 0 },
+        { month: 'Apr', leads: 0, conversions: 0 },
+        { month: 'May', leads: 0, conversions: 0 }
+    ],
+    funnelData: [0, 0, 0, 0]
+};
+
+function mapBackendAnalyticsToUIFormat(reportResponse) {
+    const reportData = reportResponse?.data || {};
+    const totals = reportData?.totals || {};
+    const rates = reportData?.rates || {};
+
+    const sent = Number(totals?.sent) || 0;
+    const opened = Number(totals?.opened) || 0;
+    const clicked = Number(totals?.clicked) || 0;
+    const converted = Number(totals?.converted) || 0;
+
+    // Keep existing chart structure with 5 points; backend currently returns aggregate totals only.
+    const monthlyMetrics = [
+        { month: 'Jan', leads: 0, conversions: 0 },
+        { month: 'Feb', leads: 0, conversions: 0 },
+        { month: 'Mar', leads: 0, conversions: 0 },
+        { month: 'Apr', leads: 0, conversions: 0 },
+        { month: 'May', leads: sent, conversions: converted }
+    ];
+
+    return {
+        totalLeads: sent,
+        activeCampaigns: Number(reportData?.total_campaigns) || 0,
+        conversionRate: Number(rates?.conversion_rate) || 0,
+        roi: 0,
+        monthlyMetrics,
+        funnelData: [sent, opened, clicked, converted]
+    };
+}
+
+async function loadAnalytics() {
+    try {
+        const response = await apiRequest('/api/analytics/report?report_type=campaign_summary');
+        return mapBackendAnalyticsToUIFormat(response);
+    } catch (error) {
+        console.error('Analytics loading error:', error);
+        return { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+    }
+}
+
+async function loadAndRenderAnalytics() {
+    analyticsRequestVersion += 1;
+    const localVersion = analyticsRequestVersion;
+
+    const analyticsData = await loadAnalytics();
+    if (localVersion !== analyticsRequestVersion) {
+        return;
+    }
+
+    updateAnalyticsDashboard(analyticsData);
+}
 
 async function loginOrganization(credentials = null) {
     try {
@@ -366,7 +421,7 @@ function handleModuleSpecialInit(moduleId) {
             updateStrategyGeneratorState();
             break;
         case 'analytics':
-            setTimeout(updateAnalyticsDashboard, 200);
+            setTimeout(() => { loadAndRenderAnalytics(); }, 200);
             break;
         case 'campaign-manager':
             displayActiveCampaigns();
@@ -393,7 +448,6 @@ function initializeSampleData() {
     // Populate templates on load
     setTimeout(() => {
         populateTemplateLibrary();
-        updateAnalyticsDashboard();
     }, 300);
 }
 
@@ -1614,44 +1668,59 @@ async function pauseCampaign(campaignId) {
 }
 
 // Analytics Functions
-function updateAnalyticsDashboard() {
+function updateAnalyticsDashboard(analyticsData) {
+    const viewModel = analyticsData || { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+
     // Update metric cards
     const totalLeadsEl = document.getElementById('totalLeadsMetric');
     const activeCampaignsEl = document.getElementById('activeCampaignsMetric');
     const conversionRateEl = document.getElementById('conversionRateMetric');
     const roiEl = document.getElementById('roiMetric');
-    
-    if (totalLeadsEl) totalLeadsEl.textContent = appData.analytics.totalLeads.toLocaleString();
-    if (activeCampaignsEl) activeCampaignsEl.textContent = appData.analytics.activeCampaigns;
-    if (conversionRateEl) conversionRateEl.textContent = `${appData.analytics.conversionRate}%`;
-    if (roiEl) roiEl.textContent = `${appData.analytics.roi}%`;
-    
+
+    if (totalLeadsEl) totalLeadsEl.textContent = Number(viewModel.totalLeads || 0).toLocaleString();
+    if (activeCampaignsEl) activeCampaignsEl.textContent = Number(viewModel.activeCampaigns || 0);
+    if (conversionRateEl) conversionRateEl.textContent = `${Number(viewModel.conversionRate || 0)}%`;
+    if (roiEl) roiEl.textContent = `${Number(viewModel.roi || 0)}%`;
+
     // Create charts with delay
     setTimeout(() => {
-        createPerformanceChart();
-        createFunnelChart();
+        createPerformanceChart(viewModel);
+        createFunnelChart(viewModel);
     }, 100);
 }
 
-function createPerformanceChart() {
+function createPerformanceChart(analyticsData) {
     const ctx = document.getElementById('performanceChart');
-    if (!ctx || ctx.chart) return;
-    
+    if (!ctx) return;
+
+    const viewModel = analyticsData || { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+    const labels = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.month) : [];
+    const leadsData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.leads) : [];
+    const conversionsData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.conversions) : [];
+
     try {
+        if (ctx.chart) {
+            ctx.chart.data.labels = labels;
+            ctx.chart.data.datasets[0].data = leadsData;
+            ctx.chart.data.datasets[1].data = conversionsData;
+            ctx.chart.update();
+            return;
+        }
+
         ctx.chart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: appData.analytics.monthlyMetrics.map(m => m.month),
+                labels,
                 datasets: [{
                     label: 'Leads Generated',
-                    data: appData.analytics.monthlyMetrics.map(m => m.leads),
+                    data: leadsData,
                     borderColor: '#1FB8CD',
                     backgroundColor: 'rgba(31, 184, 205, 0.1)',
                     tension: 0.4,
                     fill: true
                 }, {
                     label: 'Conversions',
-                    data: appData.analytics.monthlyMetrics.map(m => m.conversions),
+                    data: conversionsData,
                     borderColor: '#FFC185',
                     backgroundColor: 'rgba(255, 193, 133, 0.1)',
                     tension: 0.4,
@@ -1678,17 +1747,26 @@ function createPerformanceChart() {
     }
 }
 
-function createFunnelChart() {
+function createFunnelChart(analyticsData) {
     const ctx = document.getElementById('funnelChart');
-    if (!ctx || ctx.chart) return;
-    
+    if (!ctx) return;
+
+    const viewModel = analyticsData || { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+    const funnelData = Array.isArray(viewModel.funnelData) ? viewModel.funnelData : [0, 0, 0, 0];
+
     try {
+        if (ctx.chart) {
+            ctx.chart.data.datasets[0].data = funnelData;
+            ctx.chart.update();
+            return;
+        }
+
         ctx.chart = new Chart(ctx, {
             type: 'doughnut',
             data: {
                 labels: ['Leads', 'Qualified', 'Opportunities', 'Closed'],
                 datasets: [{
-                    data: [1247, 623, 187, 45],
+                    data: funnelData,
                     backgroundColor: ['#1FB8CD', '#FFC185', '#B4413C', '#5D878F'],
                     borderWidth: 2,
                     borderColor: '#fff'
