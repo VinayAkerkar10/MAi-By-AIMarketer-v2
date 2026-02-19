@@ -33,7 +33,6 @@ SERVICE_URLS = {
 
 SERVICE_ALIASES = {
     "admin": "auth",
-    "enrichment": "leads",
 }
 
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -42,10 +41,13 @@ async def proxy_request(service: str, path: str, request: Request):
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
     resolved_service = SERVICE_ALIASES.get(service, service)
 
-    if resolved_service not in SERVICE_URLS:
+    if resolved_service == "enrichment":
+        service_url = SERVICE_URLS["leads"]
+    elif resolved_service in SERVICE_URLS:
+        service_url = SERVICE_URLS[resolved_service]
+    else:
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
 
-    service_url = SERVICE_URLS[resolved_service]
     # Use resolved service path: /api/{service}/{path} -> service_url/api/{resolved_service}/{path}
     url = f"{service_url}/api/{resolved_service}/{path}"
 

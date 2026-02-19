@@ -153,6 +153,52 @@ async function apiRequest(path, method = "GET", body = null) {
     return data;
 }
 
+
+async function apiRequestWithOptions(path, options = {}) {
+    const token = localStorage.getItem(TOKEN_STORAGE_KEY) || await loginOrganization();
+    if (!token) {
+        throw new Error('Authentication required');
+    }
+
+    const method = options.method || 'GET';
+    const isFormData = !!options.isFormData;
+    const headers = {
+        'Authorization': `Bearer ${token}`,
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(options.headers || {})
+    };
+
+    const requestOptions = {
+        method,
+        headers,
+        body: options.body || null
+    };
+
+    let response;
+    try {
+        response = await fetch(`${BASE_API_URL}${path}`, requestOptions);
+    } catch (networkError) {
+        throw new Error('Network error. Please check backend connectivity.');
+    }
+
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (parseError) {
+        data = {};
+    }
+
+    if (!response.ok) {
+        if (response.status === 401) {
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
+        }
+        const message = data?.detail || data?.message || `Request failed with status ${response.status}`;
+        throw new Error(message);
+    }
+
+    return data;
+}
+
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -998,102 +1044,247 @@ function displayColumnMapping(columns) {
     `;
 }
 
-function startDataEnrichment() {
-    // Show step 3
-    const step2 = document.getElementById('step2');
-    const step3 = document.getElementById('step3');
-    
-    if (step2) step2.classList.add('hidden');
-    if (step3) step3.classList.remove('hidden');
-    
-    // Simulate enrichment progress
-    let progress = 0;
-    const progressInterval = setInterval(() => {
-        progress += Math.random() * 10;
-        if (progress > 100) progress = 100;
-        
-        const progressBar = document.getElementById('enrichmentProgress');
-        const progressText = document.getElementById('enrichmentProgressText');
-        
-        if (progressBar) progressBar.style.width = `${progress}%`;
-        if (progressText) progressText.textContent = `${Math.round(progress)}%`;
-        
-        if (progress >= 100) {
-            clearInterval(progressInterval);
-            
-            setTimeout(() => {
-                showEnrichmentResults();
-            }, 500);
+async function pollEnrichmentTask(taskId, onProcessing) {
+    const POLL_INTERVAL_MS = 2000;
+    const MAX_ATTEMPTS = 180;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        await sleep(POLL_INTERVAL_MS);
+
+        const response = await apiRequest(`/api/enrichment/status/${taskId}`);
+        const task = response?.status || response?.data || response || {};
+        const status = task?.status;
+
+        if (status === 'processing') {
+            if (typeof onProcessing === 'function') {
+                onProcessing(attempt, MAX_ATTEMPTS);
+            }
+            continue;
         }
-    }, 300);
+
+        if (status === 'completed' || status === 'failed') {
+            return task;
+        }
+    }
+
+    throw new Error('Data enrichment did not complete in time.');
 }
 
-function showEnrichmentResults() {
+async function startDataEnrichment() {
+    const step2 = document.getElementById('step2');
+    const step3 = document.getElementById('step3');
+    const fileInput = document.getElementById('customerDataFile');
+    const progressBar = document.getElementById('enrichmentProgress');
+    const progressText = document.getElementById('enrichmentProgressText');
+
+    const file = fileInput?.files?.[0];
+    if (!file) {
+        showErrorMessage('Please upload a file before starting enrichment.');
+        return;
+    }
+
+    if (step2) step2.classList.add('hidden');
+    if (step3) step3.classList.remove('hidden');
+
+    if (progressBar) progressBar.style.width = '10%';
+    if (progressText) progressText.textContent = '10%';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const uploadResponse = await apiRequestWithOptions('/api/enrichment/upload', {
+            method: 'POST',
+            body: formData,
+            isFormData: true
+        });
+
+        const taskId = uploadResponse?.task_id;
+        if (!taskId) {
+            throw new Error('Enrichment task ID not returned.');
+        }
+
+        if (progressBar) progressBar.style.width = '20%';
+        if (progressText) progressText.textContent = '20%';
+
+        const finalTask = await pollEnrichmentTask(taskId, (attempt, maxAttempts) => {
+            const pct = Math.min(95, 20 + Math.floor(((attempt + 1) / maxAttempts) * 75));
+            if (progressBar) progressBar.style.width = `${pct}%`;
+            if (progressText) progressText.textContent = `${pct}%`;
+        });
+
+        if (finalTask.status === 'failed') {
+            throw new Error(finalTask.error || 'Data enrichment failed.');
+        }
+
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressText) progressText.textContent = '100%';
+
+        showEnrichmentResults(finalTask);
+    } catch (error) {
+        console.error('Enrichment error:', error);
+        showErrorMessage(error.message || 'Data enrichment failed.');
+    }
+}
+
+function showEnrichmentResults(response) {
     // Show step 4
     const step3 = document.getElementById('step3');
     const step4 = document.getElementById('step4');
-    
+
     if (step3) step3.classList.add('hidden');
     if (step4) step4.classList.remove('hidden');
-    
-    // Sample data for before/after comparison
-    const beforeData = [
-        { company: 'TechCorp', email: '', phone: '', website: '' },
-        { company: 'DataSoft', email: '', phone: '', website: '' },
-        { company: 'CloudTech', email: '', phone: '', website: '' }
-    ];
-    
-    const afterData = [
-        { company: 'TechCorp', email: 'info@techcorp.com', phone: '+1-555-0123', website: 'www.techcorp.com' },
-        { company: 'DataSoft', email: 'contact@datasoft.com', phone: '+1-555-0456', website: 'www.datasoft.com' },
-        { company: 'CloudTech', email: 'hello@cloudtech.com', phone: '+1-555-0789', website: 'www.cloudtech.com' }
-    ];
-    
+
+    const beforeData = response?.original_records || response?.original_data || [];
+    const afterData = response?.enriched_records || response?.enriched_data || [];
+
     displayComparisonTables(beforeData, afterData);
-    
-    // Setup download button
+
+    // Setup real CSV download button
     const downloadBtn = document.getElementById('downloadEnrichedData');
     if (downloadBtn) {
         downloadBtn.onclick = () => {
+            downloadAsCSV(afterData, 'enriched_data.csv');
             showSuccessMessage('Enriched data download started! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
         };
     }
-    
+
     showSuccessMessage('Data enrichment completed successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
 }
 
+function downloadAsCSV(data, filename) {
+    const rows = Array.isArray(data) ? data : [];
+
+    const toCell = (value) => {
+        if (value === null || value === undefined) return '';
+        if (Array.isArray(value) || typeof value === 'object') {
+            try {
+                return JSON.stringify(value);
+            } catch {
+                return String(value);
+            }
+        }
+        return String(value);
+    };
+
+    const escapeCSV = (value) => {
+        const str = toCell(value);
+        const escaped = str.replace(/"/g, '""');
+        return `"${escaped}"`;
+    };
+
+    const headers = Array.from(
+        new Set(
+            rows.flatMap(row => (row && typeof row === 'object') ? Object.keys(row) : [])
+        )
+    );
+
+    const csvLines = [];
+    if (headers.length > 0) {
+        csvLines.push(headers.map(escapeCSV).join(','));
+        for (const row of rows) {
+            const record = (row && typeof row === 'object') ? row : {};
+            csvLines.push(headers.map(key => escapeCSV(record[key])).join(','));
+        }
+    } else {
+        csvLines.push('"No data"');
+    }
+
+    const csvContent = csvLines.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename || 'data.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    window.URL.revokeObjectURL(url);
+}
+
 function displayComparisonTables(beforeData, afterData) {
+    const safeBefore = Array.isArray(beforeData) ? beforeData : [];
+    const safeAfter = Array.isArray(afterData) ? afterData : [];
+
+    const toTitle = (key) => String(key || '')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+
+    const escapeHtml = (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const formatValue = (value) => {
+        if (value === null || value === undefined || value === '') return '-';
+
+        if (Array.isArray(value)) {
+            if (!value.length) return '-';
+            return value.map(item => formatValue(item)).join('<br>');
+        }
+
+        if (typeof value === 'object') {
+            const entries = Object.entries(value);
+            if (!entries.length) return '-';
+            return entries
+                .map(([k, v]) => `<div><strong>${escapeHtml(toTitle(k))}:</strong> ${formatValue(v)}</div>`)
+                .join('');
+        }
+
+        return escapeHtml(value);
+    };
+
+    const collectColumns = (rows) => {
+        const cols = [];
+        const seen = new Set();
+        rows.forEach(row => {
+            if (!row || typeof row !== 'object') return;
+            Object.keys(row).forEach(k => {
+                if (!seen.has(k)) {
+                    seen.add(k);
+                    cols.push(k);
+                }
+            });
+        });
+        return cols;
+    };
+
+    const renderTable = (headEl, bodyEl, rows, emphasize = false) => {
+        if (!headEl || !bodyEl) return;
+
+        const columns = collectColumns(rows);
+        if (!columns.length) {
+            headEl.innerHTML = '<tr><th>Data</th></tr>';
+            bodyEl.innerHTML = '<tr><td>-</td></tr>';
+            return;
+        }
+
+        headEl.innerHTML = `<tr>${columns.map(col => `<th>${escapeHtml(toTitle(col))}</th>`).join('')}</tr>`;
+
+        bodyEl.innerHTML = rows.length
+            ? rows.map(row => {
+                const cells = columns.map(col => {
+                    const rendered = formatValue(row?.[col]);
+                    return emphasize ? `<td><strong>${rendered}</strong></td>` : `<td>${rendered}</td>`;
+                }).join('');
+                return `<tr>${cells}</tr>`;
+            }).join('')
+            : `<tr><td colspan="${columns.length}">-</td></tr>`;
+    };
+
     // Before table
     const beforeHead = document.getElementById('beforeTableHead');
     const beforeBody = document.getElementById('beforeTableBody');
-    
-    if (beforeHead && beforeBody) {
-        beforeHead.innerHTML = '<tr><th>Company</th><th>Email</th><th>Phone</th><th>Website</th></tr>';
-        beforeBody.innerHTML = beforeData.map(row => `
-            <tr>
-                <td>${row.company}</td>
-                <td>${row.email || '-'}</td>
-                <td>${row.phone || '-'}</td>
-                <td>${row.website || '-'}</td>
-            </tr>
-        `).join('');
-    }
-    
+    renderTable(beforeHead, beforeBody, safeBefore, false);
+
     // After table
     const afterHead = document.getElementById('afterTableHead');
     const afterBody = document.getElementById('afterTableBody');
-    
-    if (afterHead && afterBody) {
-        afterHead.innerHTML = '<tr><th>Company</th><th>Email</th><th>Phone</th><th>Website</th></tr>';
-        afterBody.innerHTML = afterData.map(row => `
-            <tr>
-                <td>${row.company}</td>
-                <td><strong>${row.email}</strong></td>
-                <td><strong>${row.phone}</strong></td>
-                <td><strong>${row.website}</strong></td>
-            </tr>
-        `).join('');
-    }
+    renderTable(afterHead, afterBody, safeAfter, true);
 }
 
 // Campaign Manager Functions
@@ -1188,8 +1379,9 @@ async function createCampaign() {
     
     if (!campaignName || !campaignObjective) return;
     
-    const selectedChannels = Array.from(document.querySelectorAll('.wizard-step[data-step="2"] input[type="checkbox"]:checked'))
-        .map(cb => cb.value);
+    const selectedChannels = Array.from(
+        document.querySelectorAll('.wizard-step[data-step="2"] input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
     
     if (!campaignName.value || !campaignObjective.value || selectedChannels.length === 0) {
         showErrorMessage('Please fill in all required fields.');
@@ -1197,16 +1389,15 @@ async function createCampaign() {
     }
 
     try {
-        const channelContent = selectedChannels
-            .map(channel => {
-                const contentEl = document.getElementById(`${channel}-content`);
-                const subjectEl = document.getElementById(`${channel}-subject`);
-                return {
-                    channel,
-                    subject: subjectEl?.value || '',
-                    content: contentEl?.value || ''
-                };
-            });
+        const channelContent = selectedChannels.map(channel => {
+            const contentEl = document.getElementById(`${channel}-content`);
+            const subjectEl = document.getElementById(`${channel}-subject`);
+            return {
+                channel,
+                subject: subjectEl?.value || '',
+                content: contentEl?.value || ''
+            };
+        });
 
         const payload = {
             campaign_name: campaignName.value,
@@ -1219,19 +1410,19 @@ async function createCampaign() {
 
         const createResponse = await apiRequest('/api/campaigns/create', 'POST', payload);
 
+        // Store full backend response + UI metadata for dynamic rendering
         const campaign = {
-            id: createResponse.campaign_id,
-            name: campaignName.value,
-            objective: campaignObjective.value,
-            channels: selectedChannels,
-            status: 'Draft',
+            ...createResponse,
+            id: createResponse.campaign_id || createResponse.id || Date.now(),
+            name: createResponse.campaign_name || campaignName.value,
+            objective: createResponse.target_audience || campaignObjective.value,
+            channels: Array.isArray(createResponse.channels) ? createResponse.channels : selectedChannels,
+            content: createResponse.content ?? payload.content,
+            schedule_date: createResponse.schedule_date ?? payload.schedule_date,
+            budget: createResponse.budget ?? payload.budget,
+            status: createResponse.status || 'Draft',
             created: new Date().toLocaleDateString(),
-            metrics: {
-                sent: 0,
-                opened: 0,
-                clicked: 0,
-                converted: 0
-            }
+            metrics: createResponse.metrics || { sent: 0, opened: 0, clicked: 0, converted: 0 }
         };
 
         appData.campaigns.push(campaign);
@@ -1264,41 +1455,103 @@ function displayActiveCampaigns() {
         `;
         return;
     }
+
+    const formatValue = (value) => {
+        if (value === null || value === undefined || value === '') return 'N/A';
+        if (Array.isArray(value)) return value.join(', ') || 'N/A';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    };
+
+    const parseContent = (rawContent) => {
+        if (!rawContent) return [];
+        if (Array.isArray(rawContent)) return rawContent;
+        if (typeof rawContent === 'string') {
+            try {
+                const parsed = JSON.parse(rawContent);
+                return Array.isArray(parsed) ? parsed : [parsed];
+            } catch {
+                return [{ content: rawContent }];
+            }
+        }
+        if (typeof rawContent === 'object') return [rawContent];
+        return [];
+    };
     
-    campaignsGrid.innerHTML = appData.campaigns.map(campaign => `
+    campaignsGrid.innerHTML = appData.campaigns.map(campaign => {
+        const campaignId = campaign.id || campaign.campaign_id || Date.now();
+        const channels = Array.isArray(campaign.channels) ? campaign.channels : [];
+        const contentItems = parseContent(campaign.content);
+        const scheduleDate = campaign.schedule_date ? formatValue(campaign.schedule_date) : 'Not scheduled';
+        const budget = campaign.budget !== null && campaign.budget !== undefined ? formatValue(campaign.budget) : 'Not set';
+        const metrics = campaign.metrics || { sent: 0, opened: 0, clicked: 0, converted: 0 };
+
+        const extraFields = Object.entries(campaign)
+            .filter(([k]) => ![
+                'id', 'campaign_id', 'name', 'campaign_name', 'objective', 'target_audience',
+                'channels', 'status', 'created', 'metrics', 'content', 'schedule_date', 'budget'
+            ].includes(k))
+            .map(([k, v]) => `<div><strong>${k}:</strong> ${formatValue(v)}</div>`)
+            .join('');
+
+        return `
         <div class="campaign-card">
             <div class="campaign-card__header">
-                <h3 class="campaign-card__title">${campaign.name}</h3>
+                <h3 class="campaign-card__title">${campaign.name || campaign.campaign_name || 'Untitled Campaign'}</h3>
                 <div class="campaign-card__status">
-                    <span class="status status--success">${campaign.status}</span>
+                    <span class="status status--success">${campaign.status || 'Unknown'}</span>
                 </div>
             </div>
             <div class="campaign-card__body">
+                <div style="margin-bottom:12px;">
+                    <div><strong>Objective:</strong> ${campaign.objective || campaign.target_audience || 'N/A'}</div>
+                    <div><strong>Channels:</strong> ${channels.length ? channels.map(ch => `<span class="status status--info">${ch}</span>`).join(' ') : 'N/A'}</div>
+                    <div><strong>Schedule Date:</strong> ${scheduleDate}</div>
+                    <div><strong>Budget:</strong> ${budget}</div>
+                </div>
+
+                ${contentItems.length ? `
+                    <div style="margin-bottom:12px;">
+                        <strong>Content:</strong>
+                        ${contentItems.map(item => `
+                            <div style="margin-top:6px;">
+                                ${item.channel ? `<div><strong>Channel:</strong> ${formatValue(item.channel)}</div>` : ''}
+                                ${item.subject ? `<div><strong>Subject:</strong> ${formatValue(item.subject)}</div>` : ''}
+                                ${item.content ? `<div><strong>Message:</strong> ${formatValue(item.content)}</div>` : ''}
+                                ${!item.channel && !item.subject && !item.content ? `<div>${formatValue(item)}</div>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+
+                ${extraFields ? `<div style="margin-bottom:12px;">${extraFields}</div>` : ''}
+
                 <div class="campaign-card__metrics">
                     <div class="campaign-metric">
-                        <div class="campaign-metric__value">${campaign.metrics.sent}</div>
+                        <div class="campaign-metric__value">${metrics.sent ?? 0}</div>
                         <div class="campaign-metric__label">Sent</div>
                     </div>
                     <div class="campaign-metric">
-                        <div class="campaign-metric__value">${campaign.metrics.opened}</div>
+                        <div class="campaign-metric__value">${metrics.opened ?? 0}</div>
                         <div class="campaign-metric__label">Opened</div>
                     </div>
                     <div class="campaign-metric">
-                        <div class="campaign-metric__value">${campaign.metrics.clicked}</div>
+                        <div class="campaign-metric__value">${metrics.clicked ?? 0}</div>
                         <div class="campaign-metric__label">Clicked</div>
                     </div>
                     <div class="campaign-metric">
-                        <div class="campaign-metric__value">${campaign.metrics.converted}</div>
+                        <div class="campaign-metric__value">${metrics.converted ?? 0}</div>
                         <div class="campaign-metric__label">Converted</div>
                     </div>
                 </div>
                 <div class="campaign-card__actions">
-                    <button class="btn btn--sm btn--secondary" onclick="editCampaign(${campaign.id})">Edit</button>
-                    <button class="btn btn--sm btn--outline" onclick="pauseCampaign(${campaign.id})">Pause</button>
+                    <button class="btn btn--sm btn--secondary" onclick="editCampaign(${campaignId})">Edit</button>
+                    <button class="btn btn--sm btn--outline" onclick="pauseCampaign(${campaignId})">Pause</button>
                 </div>
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function editCampaign(campaignId) {

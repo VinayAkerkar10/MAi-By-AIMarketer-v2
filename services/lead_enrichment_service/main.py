@@ -253,15 +253,28 @@ async def upload_customer_data(
             df = pd.read_excel(io.BytesIO(contents))
         
         task_id = str(uuid.uuid4())
+        original_rows = df.to_dict('records')
         
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
+
+        # Create task entry immediately and preserve original uploaded data
+        enriched_customers[task_id] = {
+            "task_id": task_id,
+            "organization_id": current_user["organization_id"],
+            "status": "processing",
+            "original_count": len(original_rows),
+            "enriched_count": 0,
+            "original_data": original_rows,
+            "enriched_data": [],
+            "created_at": datetime.utcnow().isoformat()
+        }
         
         # Start enrichment task
         background_tasks.add_task(
             _enrich_customer_data_task,
             task_id,
-            df.to_dict('records'),
+            original_rows,
             current_user["organization_id"]
         )
         
@@ -301,6 +314,7 @@ async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], or
             "status": "completed",
             "original_count": len(customer_data),
             "enriched_count": len(enriched_data),
+            "original_data": customer_data,
             "enriched_data": enriched_data,
             "completed_at": datetime.utcnow().isoformat()
         }
@@ -309,6 +323,10 @@ async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], or
             "task_id": task_id,
             "organization_id": org_id,
             "status": "failed",
+            "original_count": len(customer_data),
+            "enriched_count": 0,
+            "original_data": customer_data,
+            "enriched_data": [],
             "error": str(e),
             "completed_at": datetime.utcnow().isoformat()
         }
