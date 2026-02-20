@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAi Login</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Auth page-only layout helpers; keeps existing theme/styles intact */
+        .auth-main {
+            min-height: calc(100vh - 180px);
+            display: flex;
+            align-items: center;
+        }
+
+        .auth-card {
+            width: 100%;
+            max-width: 460px;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <div class="header__content">
+                <div class="header__brand">
+                    <h1 class="header__title">MAi by AIMarketer</h1>
+                    <p class="header__subtitle">Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main auth-main">
+        <div class="container">
+            <div class="card auth-card">
+                <div class="card__body">
+                    <div class="module__header text-center">
+                        <h2>Sign In</h2>
+                        <p>Login to access your marketing workspace</p>
+                    </div>
+
+
+                    <form id="loginForm">
+                        <div class="form-group">
+                            <label class="form-label" for="organizationName">Organization Name</label>
+                            <input type="text" class="form-control" id="organizationName" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="userId">Email</label>
+                            <input type="text" class="form-control" id="userId" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="password">Password</label>
+                            <input type="password" class="form-control" id="password" required>
+                        </div>
+
+                        <button type="submit" class="btn btn--primary btn--full-width" id="loginButton">Login</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2025 MAi by AIMarketer - Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="config.js"></script>
+    <script src="toast.js"></script>
+    <script src="login.js"></script>
+</body>
+</html>

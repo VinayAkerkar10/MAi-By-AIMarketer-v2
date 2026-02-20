@@ -44,9 +44,21 @@ let appData = {
     ],
 };
 
-const BASE_API_URL = "http://localhost:8000";
+const BASE_API_URL = API_CONFIG.BASE_URL;
 const TOKEN_STORAGE_KEY = "access_token";
+const LOGIN_PAGE_PATH = "login.html";
 let analyticsRequestVersion = 0;
+
+function redirectToLogin() {
+    const currentPath = window.location.pathname || "";
+    if (!currentPath.endsWith(`/${LOGIN_PAGE_PATH}`) && !currentPath.endsWith(LOGIN_PAGE_PATH)) {
+        window.location.href = LOGIN_PAGE_PATH;
+    }
+}
+
+function getStoredToken() {
+    return localStorage.getItem(TOKEN_STORAGE_KEY);
+}
 
 
 const DEFAULT_ANALYTICS_VIEW_MODEL = {
@@ -116,56 +128,14 @@ async function loadAndRenderAnalytics() {
 }
 
 async function loginOrganization(credentials = null) {
-    try {
-        const organization_name = credentials?.organization_name || localStorage.getItem('organization_name') || prompt('Organization name');
-        if (!organization_name) {
-            showErrorMessage('Login cancelled: organization name is required.');
-            return null;
-        }
-
-        const user_id = credentials?.user_id || localStorage.getItem('user_id') || prompt('User ID');
-        if (!user_id) {
-            showErrorMessage('Login cancelled: user ID is required.');
-            return null;
-        }
-
-        const password = credentials?.password || prompt('Password');
-        if (!password) {
-            showErrorMessage('Login cancelled: password is required.');
-            return null;
-        }
-
-        const response = await fetch(`${BASE_API_URL}/api/auth/org-login`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ organization_name, user_id, password })
-        });
-
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result?.access_token) {
-            const message = result?.detail || result?.message || 'Login failed. Please check your credentials.';
-            showErrorMessage(message);
-            return null;
-        }
-
-        localStorage.setItem(TOKEN_STORAGE_KEY, result.access_token);
-        localStorage.setItem('organization_name', organization_name);
-        localStorage.setItem('user_id', user_id);
-
-        showSuccessMessage('Login successful.');
-        return result.access_token;
-    } catch (error) {
-        console.error('Login error:', error);
-        showErrorMessage('Unable to login. Please try again.');
-        return null;
-    }
+    redirectToLogin();
+    return null;
 }
 
 async function apiRequest(path, method = "GET", body = null) {
-    const token = localStorage.getItem(TOKEN_STORAGE_KEY) || await loginOrganization();
+    const token = getStoredToken();
     if (!token) {
+        redirectToLogin();
         throw new Error('Authentication required');
     }
 
@@ -200,6 +170,7 @@ async function apiRequest(path, method = "GET", body = null) {
     if (!response.ok) {
         if (response.status === 401) {
             localStorage.removeItem(TOKEN_STORAGE_KEY);
+            redirectToLogin();
         }
         const message = data?.detail || data?.message || `Request failed with status ${response.status}`;
         throw new Error(message);
@@ -210,8 +181,9 @@ async function apiRequest(path, method = "GET", body = null) {
 
 
 async function apiRequestWithOptions(path, options = {}) {
-    const token = localStorage.getItem(TOKEN_STORAGE_KEY) || await loginOrganization();
+    const token = getStoredToken();
     if (!token) {
+        redirectToLogin();
         throw new Error('Authentication required');
     }
 
@@ -246,6 +218,7 @@ async function apiRequestWithOptions(path, options = {}) {
     if (!response.ok) {
         if (response.status === 401) {
             localStorage.removeItem(TOKEN_STORAGE_KEY);
+            redirectToLogin();
         }
         const message = data?.detail || data?.message || `Request failed with status ${response.status}`;
         throw new Error(message);
@@ -306,6 +279,11 @@ function normalizeStrategyForDisplay(apiStrategy) {
 // Wait for DOM to be fully loaded
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded - Initializing MAi App');
+
+    if (!getStoredToken()) {
+        redirectToLogin();
+        return;
+    }
     
     // Small delay to ensure all elements are rendered
     setTimeout(() => {
@@ -1951,49 +1929,7 @@ function exportApplicationData() {
     showSuccessMessage('Application data exported successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
 }
 
-// Utility Functions
-function showSuccessMessage(message) {
-    const alertDiv = document.createElement('div');
-    alertDiv.className = 'alert alert--info success-animation';
-    alertDiv.innerHTML = `<p>${message}</p>`;
-    alertDiv.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 9999;
-        max-width: 400px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    `;
-    
-    document.body.appendChild(alertDiv);
-    
-    setTimeout(() => {
-        alertDiv.remove();
-    }, 4000);
-}
-
-function showErrorMessage(message) {
-    const alertDiv = document.createElement('div');
-    alertDiv.className = 'alert alert--error';
-    alertDiv.innerHTML = `<p>${message}</p>`;
-    alertDiv.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 9999;
-        max-width: 400px;
-        background-color: rgba(192, 21, 47, 0.1);
-        border-color: rgba(192, 21, 47, 0.2);
-        color: var(--color-error);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    `;
-    
-    document.body.appendChild(alertDiv);
-    
-    setTimeout(() => {
-        alertDiv.remove();
-    }, 4000);
-}
+// Utility Functions are provided by toast.js
 
 // Global functions for inline onclick handlers
 window.nextWizardStep = nextWizardStep;
