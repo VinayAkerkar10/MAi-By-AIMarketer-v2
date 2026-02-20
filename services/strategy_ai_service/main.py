@@ -50,12 +50,28 @@ class BusinessProfile(BaseModel):
     marketing_goals: List[str] = Field(..., description="List of marketing objectives")
     budget_range: Optional[str] = Field(None, description="Marketing budget range")
     target_audience: Optional[str] = Field(None, description="Target audience description")
+    website_link: Optional[str] = Field(None, description="Business website URL")
 
 class StrategyRequest(BaseModel):
     business_profile: BusinessProfile
     additional_context: Optional[str] = None
 
 # ===== STRATEGY GENERATION =====
+
+def normalize_website_link(website_link: Optional[str]) -> str:
+    """Normalize and validate website link for strategy context."""
+    normalized = (website_link or '').strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail='website_link is required')
+
+    if len(normalized) > 500:
+        raise HTTPException(status_code=422, detail='website_link must be 500 characters or fewer')
+
+    if not normalized.startswith(('http://', 'https://')):
+        normalized = f'https://{normalized}'
+
+    return normalized
+
 
 @app.post("/api/strategy/generate", tags=["Strategy"])
 async def generate_marketing_strategy(
@@ -72,6 +88,7 @@ async def generate_marketing_strategy(
     """
     try:
         profile = request.business_profile
+        normalized_website_link = normalize_website_link(profile.website_link)
         
         # Get strategy provider (Ollama or OpenAI)
         provider = StrategyProviderFactory.create_provider()
@@ -85,7 +102,8 @@ async def generate_marketing_strategy(
             "geography": profile.geography,
             "marketing_goals": profile.marketing_goals,
             "budget_range": profile.budget_range,
-            "target_audience": profile.target_audience
+            "target_audience": profile.target_audience,
+            "website_link": normalized_website_link
         }
         
         # Generate strategy using AI provider

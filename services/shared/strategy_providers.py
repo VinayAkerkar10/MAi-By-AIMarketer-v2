@@ -174,6 +174,7 @@ BUSINESS PROFILE:
 - Marketing Goals: {marketing_goals}
 - Budget Range: {budget_range}
 - Target Audience: {business_profile.get('target_audience', 'Not specified')}
+- Website URL: {business_profile.get('website_link', 'Not specified')}
 
 """
         if additional_context:
@@ -186,6 +187,7 @@ BUSINESS PROFILE:
 4. Research and provide competitor budget benchmarks for similar companies in this industry
 5. If the budget seems low for the goals, provide specific recommendations and warnings
 6. All recommendations must be data-driven and industry-specific
+7. Use the website URL context to tailor messaging, channel strategy, and content angles
 
 REQUIREMENTS (MUST FOLLOW):
 - Every field in the JSON must be present
@@ -479,6 +481,7 @@ BUSINESS PROFILE:
 - Marketing Goals: {marketing_goals}
 - Budget Range: {budget_range}
 - Target Audience: {business_profile.get('target_audience', 'Not specified')}
+- Website URL: {business_profile.get('website_link', 'Not specified')}
 
 """
         if additional_context:
@@ -491,6 +494,7 @@ BUSINESS PROFILE:
 4. Research and provide competitor budget benchmarks for similar companies in this industry
 5. If the budget seems low for the goals, provide specific recommendations and warnings
 6. All recommendations must be data-driven and industry-specific
+7. Use the website URL context to tailor messaging, channel strategy, and content angles
 
 Return a JSON object with this exact structure:
 {

@@ -513,6 +513,7 @@ function handleBusinessProfileSubmit(e) {
     const geography = document.getElementById('geography').value;
     const budget = parseInt(document.getElementById('budget').value) || 0;
     const targetAudience = document.getElementById('targetAudience').value;
+    const websiteLink = document.getElementById('websiteLink').value.trim();
     
     const marketingGoals = Array.from(document.querySelectorAll('#business-profile input[type="checkbox"]:checked')).map(cb => cb.value);
     
@@ -524,7 +525,8 @@ function handleBusinessProfileSubmit(e) {
         geography,
         marketingGoals,
         budget,
-        targetAudience
+        targetAudience,
+        websiteLink
     };
     
     console.log('Profile data:', profile);
@@ -566,6 +568,9 @@ function displayProfileSummary(profile) {
             </div>
             <div class="summary-item" style="margin-bottom: 12px;">
                 <strong>Target Audience:</strong> ${profile.targetAudience}
+            </div>
+            <div class="summary-item" style="margin-bottom: 12px;">
+                <strong>Website:</strong> ${profile.websiteLink || ''}
             </div>
         </div>
     `;
@@ -624,7 +629,8 @@ async function generateAIStrategy() {
                 geography: profile.geography,
                 marketing_goals: Array.isArray(profile.marketingGoals) ? profile.marketingGoals : [],
                 budget_range: profile.budget ? `$${Number(profile.budget).toLocaleString()}` : null,
-                target_audience: profile.targetAudience || null
+                target_audience: profile.targetAudience || null,
+                website_link: profile.websiteLink || null
             }
         };
 
@@ -1887,8 +1893,11 @@ function loadDataFromStorage() {
             const parsedData = JSON.parse(savedData);
             
             if (parsedData.businessProfile) {
-                appData.businessProfile = parsedData.businessProfile;
-                displayProfileSummary(parsedData.businessProfile);
+                appData.businessProfile = {
+                    ...parsedData.businessProfile,
+                    websiteLink: parsedData.businessProfile.websiteLink || ''
+                };
+                displayProfileSummary(appData.businessProfile);
             }
             
             if (parsedData.generatedStrategy) {
