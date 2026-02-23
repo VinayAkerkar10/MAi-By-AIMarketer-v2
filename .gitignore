@@ -1,3 +1,17 @@
-.env
-.env.*
-backup_local/
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Alembic cache
+alembic/__pycache__/
+
+# OS files
+.DS_Store
+Thumbs.db

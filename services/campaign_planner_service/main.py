@@ -14,7 +14,7 @@ import httpx
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database import get_db, FeatureName
+from shared.database import get_db, SessionLocal, FeatureName, Campaign, CampaignMetric
 from shared.auth import require_feature
 
 app = FastAPI(
@@ -30,10 +30,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# In-memory storage (replace with database)
-campaigns_data: Dict[str, Dict[str, Any]] = {}
-campaign_analytics: Dict[str, Dict[str, Any]] = {}
 
 LEAD_SERVICE_URL = os.getenv("LEAD_SERVICE_URL", "http://lead_enrichment_service:8004")
 LEAD_SERVICE_TIMEOUT = httpx.Timeout(10.0, connect=10.0)
@@ -61,39 +57,37 @@ class CampaignUpdateRequest(BaseModel):
     budget: Optional[float] = None
 
 
+def _as_non_negative_int(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return 0
 
 
-def _default_metrics() -> Dict[str, int]:
-    return {
-        "sent": 0,
-        "opened": 0,
-        "clicked": 0,
-        "converted": 0,
+def _campaign_row_to_response(campaign: Campaign, metric: Optional[CampaignMetric]) -> Dict[str, Any]:
+    metrics = {
+        "sent": _as_non_negative_int(metric.sent) if metric else 0,
+        "opened": _as_non_negative_int(metric.opened) if metric else 0,
+        "clicked": _as_non_negative_int(metric.clicked) if metric else 0,
+        "converted": _as_non_negative_int(metric.converted) if metric else 0,
     }
 
-
-def _ensure_campaign_defaults(campaign: Dict[str, Any]) -> Dict[str, Any]:
-    if "metrics" not in campaign or not isinstance(campaign.get("metrics"), dict):
-        campaign["metrics"] = _default_metrics()
-    else:
-        defaults = _default_metrics()
-        for key, fallback in defaults.items():
-            metric_val = campaign["metrics"].get(key, fallback)
-            campaign["metrics"][key] = int(metric_val) if isinstance(metric_val, (int, float)) else fallback
-
-    if "deployed_at" not in campaign:
-        campaign["deployed_at"] = None
-
-    if "updated_at" not in campaign:
-        campaign["updated_at"] = datetime.utcnow().isoformat()
-
-    if "audience_source" not in campaign:
-        campaign["audience_source"] = "scraped_leads"
-
-    if "manual_selection" not in campaign or not isinstance(campaign.get("manual_selection"), list):
-        campaign["manual_selection"] = []
-
-    return campaign
+    return {
+        "campaign_id": campaign.id,
+        "organization_id": campaign.organization_id,
+        "campaign_name": campaign.campaign_name,
+        "channels": campaign.channels if isinstance(campaign.channels, list) else [],
+        "target_audience": campaign.target_audience,
+        "content": campaign.content,
+        "schedule_date": campaign.schedule_date.isoformat() if campaign.schedule_date else None,
+        "budget": campaign.budget,
+        "audience_source": campaign.audience_source or "scraped_leads",
+        "manual_selection": campaign.manual_selection if isinstance(campaign.manual_selection, list) else [],
+        "status": campaign.status,
+        "metrics": metrics,
+        "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
+        "updated_at": campaign.updated_at.isoformat() if campaign.updated_at else None,
+        "deployed_at": campaign.deployed_at.isoformat() if campaign.deployed_at else None,
+    }
 
 
 def _coerce_string(value: Any, fallback: str = "") -> str:
@@ -286,22 +280,61 @@ def send_email_via_smtp(to_email: str, subject: str, body: str) -> bool:
         return False
 
 
-async def execute_campaign(campaign_id: str, auth_header: Optional[str] = None) -> Dict[str, Any]:
-    campaign = campaigns_data.get(campaign_id)
+async def execute_campaign(
+    campaign_id: str,
+    db: Session,
+    organization_id: str,
+    auth_header: Optional[str] = None,
+) -> Dict[str, Any]:
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == organization_id,
+        )
+        .first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    audience_source = campaign.get("audience_source", "scraped_leads")
-    manual_selection = campaign.get("manual_selection", [])
+    metric = (
+        db.query(CampaignMetric)
+        .filter(
+            CampaignMetric.campaign_id == campaign_id,
+            CampaignMetric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not metric:
+        metric = CampaignMetric(
+            campaign_id=campaign_id,
+            organization_id=organization_id,
+            sent=0,
+            opened=0,
+            clicked=0,
+            converted=0,
+            impressions=0,
+            cost=0.0,
+            ctr=0.0,
+            conversion_rate=0.0,
+            cpa=0.0,
+            roi=0.0,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(metric)
+
+    audience_source = campaign.audience_source or "scraped_leads"
+    manual_selection = campaign.manual_selection if isinstance(campaign.manual_selection, list) else []
 
     print(
         f"[campaign_debug] execute_campaign campaign_id={campaign_id} "
-        f"org={campaign.get('organization_id')} source={audience_source!r}"
+        f"org={organization_id} source={audience_source!r}"
     )
 
     try:
         leads = await get_audience_leads(
-            organization_id=campaign["organization_id"],
+            organization_id=organization_id,
             audience_source=audience_source,
             manual_selection=manual_selection,
             auth_header=auth_header,
@@ -317,8 +350,8 @@ async def execute_campaign(campaign_id: str, auth_header: Optional[str] = None) 
 
     sent = 0
     if audience_source == "customer_upload":
-        subject = f"Campaign: {campaign.get('campaign_name', 'Marketing Campaign')}"
-        body = campaign.get("content") or "Hello, this is a campaign outreach message."
+        subject = f"Campaign: {campaign.campaign_name or 'Marketing Campaign'}"
+        body = campaign.content or "Hello, this is a campaign outreach message."
         for lead in leads:
             email = (lead.get("email") or "").strip()
             if not email:
@@ -335,36 +368,26 @@ async def execute_campaign(campaign_id: str, auth_header: Optional[str] = None) 
     clicked = 0
     converted = 0
 
-    now = datetime.utcnow().isoformat()
-    campaign["metrics"] = {
-        "sent": sent,
-        "opened": opened,
-        "clicked": clicked,
-        "converted": converted,
-    }
-    campaign["status"] = "active"
-    campaign["deployed_at"] = now
-    campaign["updated_at"] = now
+    try:
+        now = datetime.utcnow()
+        campaign.status = "active"
+        campaign.deployed_at = now
+        campaign.updated_at = now
 
-    campaigns_data[campaign_id] = _ensure_campaign_defaults(campaign)
+        metric.sent = sent
+        metric.opened = opened
+        metric.clicked = clicked
+        metric.converted = converted
+        metric.updated_at = now
 
-    if campaign_id not in campaign_analytics:
-        campaign_analytics[campaign_id] = {
-            "campaign_id": campaign_id,
-            "impressions": 0,
-            "clicks": 0,
-            "conversions": 0,
-            "cost": 0.0,
-            "ctr": 0.0,
-            "conversion_rate": 0.0,
-            "cpa": 0.0,
-            "roi": 0.0,
-        }
+        db.commit()
+        db.refresh(campaign)
+        db.refresh(metric)
+    except Exception:
+        db.rollback()
+        raise
 
-    campaign_analytics[campaign_id]["clicks"] = clicked
-    campaign_analytics[campaign_id]["conversions"] = converted
-
-    return campaigns_data[campaign_id]
+    return _campaign_row_to_response(campaign, metric)
 
 
 # ===== CAMPAIGN MANAGEMENT =====
@@ -396,39 +419,53 @@ async def create_campaign(
             f"manual_selection_len={manual_count} auth_header_present={bool(auth_header)}"
         )
 
-        campaign_data = {
-            "campaign_id": campaign_id,
-            "organization_id": current_user["organization_id"],
-            "campaign_name": campaign.campaign_name,
-            "channels": campaign.channels,
-            "target_audience": campaign.target_audience,
-            "content": campaign.content,
-            "schedule_date": campaign.schedule_date.isoformat() if campaign.schedule_date else None,
-            "budget": campaign.budget,
-            "audience_source": audience_source,
-            "manual_selection": campaign.manual_selection or [],
-            "status": "draft",
-            "metrics": _default_metrics(),
-            "created_at": now,
-            "updated_at": now,
-            "deployed_at": None,
-        }
+        try:
+            db_campaign = Campaign(
+                id=campaign_id,
+                organization_id=current_user["organization_id"],
+                campaign_name=campaign.campaign_name,
+                channels=campaign.channels,
+                target_audience=campaign.target_audience,
+                content=campaign.content,
+                schedule_date=campaign.schedule_date,
+                budget=campaign.budget,
+                audience_source=audience_source,
+                manual_selection=campaign.manual_selection or [],
+                status="draft",
+                created_at=datetime.fromisoformat(now),
+                updated_at=datetime.fromisoformat(now),
+                deployed_at=None,
+            )
+            db.add(db_campaign)
 
-        campaigns_data[campaign_id] = campaign_data
+            db_metric = CampaignMetric(
+                campaign_id=campaign_id,
+                organization_id=current_user["organization_id"],
+                sent=0,
+                opened=0,
+                clicked=0,
+                converted=0,
+                impressions=0,
+                cost=0.0,
+                ctr=0.0,
+                conversion_rate=0.0,
+                cpa=0.0,
+                roi=0.0,
+                created_at=datetime.fromisoformat(now),
+                updated_at=datetime.fromisoformat(now),
+            )
+            db.add(db_metric)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to persist campaign: {str(e)}")
 
-        campaign_analytics[campaign_id] = {
-            "campaign_id": campaign_id,
-            "impressions": 0,
-            "clicks": 0,
-            "conversions": 0,
-            "cost": 0.0,
-            "ctr": 0.0,
-            "conversion_rate": 0.0,
-            "cpa": 0.0,
-            "roi": 0.0,
-        }
-
-        updated_campaign = await execute_campaign(campaign_id, auth_header=auth_header)
+        updated_campaign = await execute_campaign(
+            campaign_id,
+            db=db,
+            organization_id=current_user["organization_id"],
+            auth_header=auth_header,
+        )
 
         return {
             "success": True,
@@ -448,17 +485,26 @@ async def schedule_campaign(
     db: Session = Depends(get_db),
 ):
     """Schedule campaign for deployment"""
-    if campaign_id not in campaigns_data:
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    campaign = campaigns_data[campaign_id]
-    if campaign["organization_id"] != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    campaign.status = "scheduled"
+    campaign.updated_at = datetime.utcnow()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
-    background_tasks.add_task(_deploy_campaign_task, campaign_id)
-
-    campaigns_data[campaign_id]["status"] = "scheduled"
-    campaigns_data[campaign_id]["updated_at"] = datetime.utcnow().isoformat()
+    background_tasks.add_task(_deploy_campaign_task, campaign_id, current_user["organization_id"])
 
     return {
         "success": True,
@@ -467,23 +513,47 @@ async def schedule_campaign(
     }
 
 
-async def _deploy_campaign_task(campaign_id: str):
+async def _deploy_campaign_task(campaign_id: str, organization_id: str):
     """Background task for campaign deployment"""
+    db = SessionLocal()
     try:
-        campaign = campaigns_data[campaign_id]
+        campaign = (
+            db.query(Campaign)
+            .filter(
+                Campaign.id == campaign_id,
+                Campaign.organization_id == organization_id,
+            )
+            .first()
+        )
+        if not campaign:
+            return
 
-        for channel in campaign["channels"]:
-            await _deploy_to_channel(campaign_id, channel, campaign)
+        channels = campaign.channels if isinstance(campaign.channels, list) else []
+        campaign_payload = _campaign_row_to_response(campaign, None)
+        for channel in channels:
+            await _deploy_to_channel(campaign_id, channel, campaign_payload)
 
-        campaigns_data[campaign_id]["status"] = "active"
-        campaigns_data[campaign_id]["deployed_at"] = datetime.utcnow().isoformat()
-        campaigns_data[campaign_id]["updated_at"] = datetime.utcnow().isoformat()
-        campaigns_data[campaign_id] = _ensure_campaign_defaults(campaigns_data[campaign_id])
+        campaign.status = "active"
+        campaign.deployed_at = datetime.utcnow()
+        campaign.updated_at = datetime.utcnow()
+        db.commit()
     except Exception as e:
-        campaigns_data[campaign_id]["status"] = "failed"
-        campaigns_data[campaign_id]["error"] = str(e)
-        campaigns_data[campaign_id]["updated_at"] = datetime.utcnow().isoformat()
-        campaigns_data[campaign_id] = _ensure_campaign_defaults(campaigns_data[campaign_id])
+        db.rollback()
+        campaign = (
+            db.query(Campaign)
+            .filter(
+                Campaign.id == campaign_id,
+                Campaign.organization_id == organization_id,
+            )
+            .first()
+        )
+        if campaign:
+            campaign.status = "failed"
+            campaign.updated_at = datetime.utcnow()
+            db.commit()
+        print(f"[campaign_debug] deploy_task_failed campaign_id={campaign_id} error={str(e)}")
+    finally:
+        db.close()
 
 
 async def _deploy_to_channel(campaign_id: str, channel: str, campaign_data: dict):
@@ -497,11 +567,15 @@ async def get_campaigns(
     db: Session = Depends(get_db),
 ):
     """Get all campaigns for the organization"""
-    org_campaigns = [
-        _ensure_campaign_defaults(campaign.copy())
-        for campaign in campaigns_data.values()
-        if campaign["organization_id"] == current_user["organization_id"]
-    ]
+    rows = (
+        db.query(Campaign, CampaignMetric)
+        .outerjoin(CampaignMetric, CampaignMetric.campaign_id == Campaign.id)
+        .filter(Campaign.organization_id == current_user["organization_id"])
+        .order_by(Campaign.created_at.desc())
+        .all()
+    )
+
+    org_campaigns = [_campaign_row_to_response(campaign, metric) for campaign, metric in rows]
 
     return {
         "success": True,
@@ -516,18 +590,24 @@ async def get_campaign(
     db: Session = Depends(get_db),
 ):
     """Get campaign details"""
-    if campaign_id not in campaigns_data:
+    row = (
+        db.query(Campaign, CampaignMetric)
+        .outerjoin(CampaignMetric, CampaignMetric.campaign_id == Campaign.id)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not row:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    campaign = campaigns_data[campaign_id]
-    if campaign["organization_id"] != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    campaign = _ensure_campaign_defaults(campaign.copy())
+    campaign, metric = row
+    campaign_payload = _campaign_row_to_response(campaign, metric)
 
     return {
         "success": True,
-        "campaign": campaign,
+        "campaign": campaign_payload,
     }
 
 
@@ -539,32 +619,52 @@ async def update_campaign(
     db: Session = Depends(get_db),
 ):
     """Update campaign details"""
-    if campaign_id not in campaigns_data:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        db_campaign = (
+            db.query(Campaign)
+            .filter(
+                Campaign.id == campaign_id,
+                Campaign.organization_id == current_user["organization_id"],
+            )
+            .first()
+        )
+        if db_campaign:
+            if payload.campaign_name is not None:
+                db_campaign.campaign_name = payload.campaign_name
+            if payload.channels is not None:
+                db_campaign.channels = payload.channels
+            if payload.target_audience is not None:
+                db_campaign.target_audience = payload.target_audience
+            if payload.content is not None:
+                db_campaign.content = payload.content
+            if payload.schedule_date is not None:
+                db_campaign.schedule_date = payload.schedule_date
+            if payload.budget is not None:
+                db_campaign.budget = payload.budget
+            db_campaign.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(db_campaign)
+        else:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Campaign not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update campaign persistence: {str(e)}")
 
-    campaign = campaigns_data[campaign_id]
-    if campaign.get("organization_id") != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    if payload.campaign_name is not None:
-        campaign["campaign_name"] = payload.campaign_name
-    if payload.channels is not None:
-        campaign["channels"] = payload.channels
-    if payload.target_audience is not None:
-        campaign["target_audience"] = payload.target_audience
-    if payload.content is not None:
-        campaign["content"] = payload.content
-    if payload.schedule_date is not None:
-        campaign["schedule_date"] = payload.schedule_date.isoformat()
-    if payload.budget is not None:
-        campaign["budget"] = payload.budget
-
-    campaign["updated_at"] = datetime.utcnow().isoformat()
-    campaigns_data[campaign_id] = _ensure_campaign_defaults(campaign)
+    db_metric = (
+        db.query(CampaignMetric)
+        .filter(
+            CampaignMetric.campaign_id == campaign_id,
+            CampaignMetric.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
 
     return {
         "success": True,
-        "campaign": campaigns_data[campaign_id],
+        "campaign": _campaign_row_to_response(db_campaign, db_metric),
     }
 
 
@@ -575,22 +675,39 @@ async def pause_campaign(
     db: Session = Depends(get_db),
 ):
     """Pause/unpause campaign"""
-    if campaign_id not in campaigns_data:
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    campaign = campaigns_data[campaign_id]
-    if campaign.get("organization_id") != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    current_status = str(campaign.status or "").lower()
+    campaign.status = "active" if current_status == "paused" else "paused"
+    campaign.updated_at = datetime.utcnow()
+    try:
+        db.commit()
+        db.refresh(campaign)
+    except Exception:
+        db.rollback()
+        raise
 
-    current_status = str(campaign.get("status", "")).lower()
-    campaign["status"] = "active" if current_status == "paused" else "paused"
-    campaign["updated_at"] = datetime.utcnow().isoformat()
-
-    campaigns_data[campaign_id] = _ensure_campaign_defaults(campaign)
+    metric = (
+        db.query(CampaignMetric)
+        .filter(
+            CampaignMetric.campaign_id == campaign_id,
+            CampaignMetric.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
 
     return {
         "success": True,
-        "campaign": campaigns_data[campaign_id],
+        "campaign": _campaign_row_to_response(campaign, metric),
     }
 
 

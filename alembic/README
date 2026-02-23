@@ -1,0 +1,2 @@
+Single-database Alembic environment for this repository.
+Revision files should be created under alembic/versions.

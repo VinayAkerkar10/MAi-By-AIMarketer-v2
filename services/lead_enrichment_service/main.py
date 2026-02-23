@@ -15,7 +15,19 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from shared.database import get_db, UsageRecord, FeatureName
+from shared.database import (
+    get_db,
+    SessionLocal,
+    UsageRecord,
+    FeatureName,
+    LeadScrapeTask,
+    LeadSourceRun,
+    LeadScrapeResult,
+    EnrichmentTask,
+    EnrichmentRow,
+    TaskStatus,
+    LeadSource,
+)
 from shared.auth import get_current_user, require_feature
 from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
 
@@ -33,9 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage (replace with database)
-leads_data = {}
-enriched_customers = {}
+# Lead scraping and enrichment now use PostgreSQL persistence.
 
 # ===== REQUEST MODELS =====
 
@@ -55,6 +65,173 @@ SOURCE_API_KEY_ENV = {
     "linkedin": "LINKEDIN_API_KEY",
     "volza": "VOLZA_API_KEY"
 }
+
+
+def _to_task_status(value: str) -> TaskStatus:
+    status_map = {
+        "pending": TaskStatus.PENDING,
+        "processing": TaskStatus.RUNNING,
+        "running": TaskStatus.RUNNING,
+        "completed": TaskStatus.COMPLETED,
+        "failed": TaskStatus.FAILED,
+        "partial": TaskStatus.PARTIAL,
+        "cancelled": TaskStatus.CANCELLED,
+    }
+    return status_map.get(str(value or "").lower(), TaskStatus.FAILED)
+
+
+def _to_legacy_task_status(status: TaskStatus) -> str:
+    if status == TaskStatus.RUNNING:
+        return "processing"
+    if status == TaskStatus.COMPLETED:
+        return "completed"
+    if status == TaskStatus.FAILED:
+        return "failed"
+    if status == TaskStatus.PENDING:
+        return "processing"
+    if status == TaskStatus.PARTIAL:
+        return "completed"
+    if status == TaskStatus.CANCELLED:
+        return "failed"
+    return "failed"
+
+
+def _to_lead_source(source: str) -> LeadSource:
+    source_map = {
+        "github": LeadSource.GITHUB,
+        "google_maps": LeadSource.GOOGLE_MAPS,
+        "linkedin": LeadSource.LINKEDIN,
+        "volza": LeadSource.VOLZA,
+    }
+    return source_map[str(source or "").lower()]
+
+
+def _source_enum_to_key(source: LeadSource) -> str:
+    return str(source.value if isinstance(source, LeadSource) else source)
+
+
+def _enrichment_status_to_legacy(status: TaskStatus) -> str:
+    if status == TaskStatus.RUNNING:
+        return "processing"
+    if status == TaskStatus.COMPLETED:
+        return "completed"
+    if status == TaskStatus.FAILED:
+        return "failed"
+    if status == TaskStatus.PENDING:
+        return "processing"
+    if status == TaskStatus.PARTIAL:
+        return "completed"
+    if status == TaskStatus.CANCELLED:
+        return "failed"
+    return "failed"
+
+
+def _enrichment_task_to_legacy_payload(task: EnrichmentTask, rows: List[EnrichmentRow]) -> Dict[str, Any]:
+    ordered_rows = sorted(rows, key=lambda row: row.row_index if isinstance(row.row_index, int) else 0)
+    original_data = [row.original_data for row in ordered_rows]
+    enriched_data = [row.enriched_data for row in ordered_rows if row.enriched_data is not None]
+
+    return {
+        "task_id": task.id,
+        "organization_id": task.organization_id,
+        "status": _enrichment_status_to_legacy(task.status),
+        "original_count": int(task.original_count or len(original_data)),
+        "enriched_count": int(task.enriched_count or len(enriched_data)),
+        "original_data": original_data,
+        "enriched_data": enriched_data,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "error": task.error,
+    }
+
+
+def _lead_row_to_payload(row: LeadScrapeResult) -> Dict[str, Any]:
+    if isinstance(row.raw_payload, dict):
+        return row.raw_payload
+
+    payload = {
+        "business_name": row.business_name,
+        "contact_name": row.contact_name,
+        "email": row.email,
+        "phone": row.phone,
+        "website": row.website,
+        "address": row.address,
+        "source": _source_enum_to_key(row.source),
+        "category": row.category,
+        "metadata": row.meta_data or {},
+        "scraped_at": row.created_at.isoformat() if row.created_at else datetime.utcnow().isoformat(),
+    }
+    return payload
+
+
+def _build_results_from_runs(
+    source_runs: List[LeadSourceRun],
+    source_to_leads: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Dict[str, Any]]:
+    results: Dict[str, Dict[str, Any]] = {}
+    for run in source_runs:
+        source_key = _source_enum_to_key(run.source)
+        run_status = _to_legacy_task_status(run.status)
+        if run_status == "completed":
+            results[source_key] = {
+                "status": "success",
+                "leads": source_to_leads.get(source_key, []),
+            }
+        else:
+            results[source_key] = {
+                "status": "error",
+                "message": run.message or "Source scraping failed.",
+            }
+    return results
+
+
+def _lead_scrape_task_to_legacy_payload(
+    task: LeadScrapeTask,
+    source_runs: List[LeadSourceRun],
+    lead_rows: List[LeadScrapeResult],
+) -> Dict[str, Any]:
+    leads_payload = [_lead_row_to_payload(row) for row in lead_rows]
+
+    source_to_leads: Dict[str, List[Dict[str, Any]]] = {}
+    for lead in leads_payload:
+        source_key = str(lead.get("source") or "")
+        source_to_leads.setdefault(source_key, []).append(lead)
+
+    results_payload = (
+        task.source_results
+        if isinstance(task.source_results, dict)
+        else _build_results_from_runs(source_runs, source_to_leads)
+    )
+
+    summary_payload = (
+        task.summary
+        if isinstance(task.summary, dict)
+        else {
+            "total_sources_requested": len(task.requested_sources or []),
+            "successful_sources": sum(1 for r in results_payload.values() if r.get("status") == "success"),
+            "failed_sources": sum(1 for r in results_payload.values() if r.get("status") == "error"),
+        }
+    )
+
+    return {
+        "task_id": task.id,
+        "organization_id": task.organization_id,
+        "status": _to_legacy_task_status(task.status),
+        "leads": leads_payload,
+        "total_found": int(task.total_found or len(leads_payload)),
+        "search_params": {
+            "location": task.location,
+            "business_type": task.business_type,
+            "radius": task.radius,
+            "max_results": task.max_results,
+            "sources": task.requested_sources if isinstance(task.requested_sources, list) else [],
+        },
+        "results": results_payload,
+        "summary": summary_payload,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "error": task.error,
+    }
 
 
 def _normalize_sources(sources: Optional[List[str]]) -> List[str]:
@@ -194,18 +371,28 @@ async def start_lead_scraping(
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
 
-        # Create task record immediately so GET /api/leads/{task_id} never 404s due to timing
-        search_params = request.dict()
-        search_params["sources"] = selected_sources
-        leads_data[task_id] = {
-            "task_id": task_id,
-            "organization_id": current_user["organization_id"],
-            "status": "processing",
-            "leads": [],
-            "total_found": 0,
-            "search_params": search_params,
-            "created_at": datetime.utcnow().isoformat()
-        }
+        try:
+            db_task = LeadScrapeTask(
+                id=task_id,
+                organization_id=current_user["organization_id"],
+                location=request.location,
+                business_type=request.business_type,
+                radius=request.radius,
+                max_results=request.max_results,
+                requested_sources=selected_sources,
+                status=TaskStatus.RUNNING,
+                total_found=0,
+                source_results=None,
+                summary=None,
+                created_at=datetime.utcnow(),
+                started_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(db_task)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to persist scrape task: {str(e)}")
 
         # Start background task
         background_tasks.add_task(
@@ -229,12 +416,45 @@ async def start_lead_scraping(
 
 async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id: str):
     """Background task for multi-source lead scraping"""
+    db = SessionLocal()
     try:
         sources = _normalize_sources(request.sources)
         results: Dict[str, Dict[str, Any]] = {}
         all_leads: List[Dict[str, Any]] = []
 
         for source in sources:
+            db_source_run = (
+                db.query(LeadSourceRun)
+                .filter(
+                    LeadSourceRun.task_id == task_id,
+                    LeadSourceRun.organization_id == org_id,
+                    LeadSourceRun.source == _to_lead_source(source),
+                )
+                .first()
+            )
+            if not db_source_run:
+                db_source_run = LeadSourceRun(
+                    id=str(uuid.uuid4()),
+                    task_id=task_id,
+                    organization_id=org_id,
+                    source=_to_lead_source(source),
+                    status=TaskStatus.RUNNING,
+                    message=None,
+                    leads_count=0,
+                    created_at=datetime.utcnow(),
+                    completed_at=None,
+                )
+                db.add(db_source_run)
+            else:
+                db_source_run.status = TaskStatus.RUNNING
+                db_source_run.message = None
+                db_source_run.completed_at = None
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
             if source == "github":
                 status, leads, message = await _scrape_github_leads(request)
                 if status == "success":
@@ -243,11 +463,50 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
                         "leads": leads,
                     }
                     all_leads.extend(leads)
+                    db_source_run.status = TaskStatus.COMPLETED
+                    db_source_run.leads_count = len(leads)
+                    db_source_run.completed_at = datetime.utcnow()
+                    db_source_run.message = None
+                    lead_rows = []
+                    for lead in leads:
+                        lead_rows.append(
+                            LeadScrapeResult(
+                                id=str(uuid.uuid4()),
+                                task_id=task_id,
+                                organization_id=org_id,
+                                source=_to_lead_source(source),
+                                business_name=lead.get("business_name"),
+                                contact_name=lead.get("contact_name"),
+                                email=lead.get("email"),
+                                phone=lead.get("phone"),
+                                website=lead.get("website"),
+                                address=lead.get("address"),
+                                category=lead.get("category"),
+                                meta_data=lead.get("metadata"),
+                                raw_payload=lead,
+                                created_at=datetime.utcnow(),
+                            )
+                        )
+                    db.add_all(lead_rows)
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
                 else:
                     results[source] = {
                         "status": "error",
                         "message": message or "GitHub scraping failed.",
                     }
+                    db_source_run.status = TaskStatus.FAILED
+                    db_source_run.leads_count = len(leads) if isinstance(leads, list) else 0
+                    db_source_run.message = message or "GitHub scraping failed."
+                    db_source_run.completed_at = datetime.utcnow()
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
                 continue
 
             env_var = SOURCE_API_KEY_ENV.get(source)
@@ -257,12 +516,30 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
                     "status": "error",
                     "message": f"{source_label} not configured. API key missing.",
                 }
+                db_source_run.status = TaskStatus.FAILED
+                db_source_run.leads_count = 0
+                db_source_run.message = f"{source_label} not configured. API key missing."
+                db_source_run.completed_at = datetime.utcnow()
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
             else:
                 source_label = source.replace("_", " ").title()
                 results[source] = {
                     "status": "error",
                     "message": f"{source_label} source is not configured.",
                 }
+                db_source_run.status = TaskStatus.FAILED
+                db_source_run.leads_count = 0
+                db_source_run.message = f"{source_label} source is not configured."
+                db_source_run.completed_at = datetime.utcnow()
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
 
         successful_sources = sum(1 for data in results.values() if data.get("status") == "success")
         failed_sources = len(results) - successful_sources
@@ -290,15 +567,51 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
         if task_status == "failed":
             task_payload["error"] = "All selected sources failed."
 
-        leads_data[task_id] = task_payload
+        try:
+            db_task = (
+                db.query(LeadScrapeTask)
+                .filter(
+                    LeadScrapeTask.id == task_id,
+                    LeadScrapeTask.organization_id == org_id,
+                )
+                .first()
+            )
+            if db_task:
+                db_task.status = _to_task_status(task_status)
+                db_task.total_found = len(all_leads)
+                db_task.source_results = results
+                db_task.summary = task_payload["summary"]
+                db_task.error = task_payload.get("error")
+                db_task.completed_at = datetime.utcnow()
+                db_task.updated_at = datetime.utcnow()
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+            raise
     except Exception as e:
-        leads_data[task_id] = {
-            "task_id": task_id,
-            "organization_id": org_id,
-            "status": "failed",
-            "error": str(e),
-            "completed_at": datetime.utcnow().isoformat()
-        }
+        try:
+            db_task = (
+                db.query(LeadScrapeTask)
+                .filter(
+                    LeadScrapeTask.id == task_id,
+                    LeadScrapeTask.organization_id == org_id,
+                )
+                .first()
+            )
+            if db_task:
+                db_task.status = TaskStatus.FAILED
+                db_task.error = str(e)
+                db_task.completed_at = datetime.utcnow()
+                db_task.updated_at = datetime.utcnow()
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+    finally:
+        db.close()
 
 @app.get("/api/leads/{task_id}", tags=["Lead Generation"])
 async def get_scraped_leads(
@@ -307,12 +620,35 @@ async def get_scraped_leads(
     db: Session = Depends(get_db)
 ):
     """Get scraped leads by task ID"""
-    if task_id not in leads_data:
+    org_id = current_user["organization_id"]
+    db_task = (
+        db.query(LeadScrapeTask)
+        .filter(
+            LeadScrapeTask.id == task_id,
+            LeadScrapeTask.organization_id == org_id,
+        )
+        .first()
+    )
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task_data = leads_data[task_id]
-    if task_data["organization_id"] != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    source_runs = (
+        db.query(LeadSourceRun)
+        .filter(
+            LeadSourceRun.task_id == task_id,
+            LeadSourceRun.organization_id == org_id,
+        )
+        .all()
+    )
+    lead_rows = (
+        db.query(LeadScrapeResult)
+        .filter(
+            LeadScrapeResult.task_id == task_id,
+            LeadScrapeResult.organization_id == org_id,
+        )
+        .all()
+    )
+    task_data = _lead_scrape_task_to_legacy_payload(db_task, source_runs, lead_rows)
 
     return {
         "success": True,
@@ -326,11 +662,32 @@ async def list_scraped_lead_tasks(
 ):
     """List all lead scraping tasks for organization"""
     org_id = current_user["organization_id"]
-    tasks = [
-        task_data
-        for task_data in leads_data.values()
-        if task_data.get("organization_id") == org_id
-    ]
+    db_tasks = (
+        db.query(LeadScrapeTask)
+        .filter(LeadScrapeTask.organization_id == org_id)
+        .order_by(LeadScrapeTask.created_at.desc())
+        .all()
+    )
+
+    tasks = []
+    for task in db_tasks:
+        source_runs = (
+            db.query(LeadSourceRun)
+            .filter(
+                LeadSourceRun.task_id == task.id,
+                LeadSourceRun.organization_id == org_id,
+            )
+            .all()
+        )
+        lead_rows = (
+            db.query(LeadScrapeResult)
+            .filter(
+                LeadScrapeResult.task_id == task.id,
+                LeadScrapeResult.organization_id == org_id,
+            )
+            .all()
+        )
+        tasks.append(_lead_scrape_task_to_legacy_payload(task, source_runs, lead_rows))
 
     return {
         "success": True,
@@ -364,17 +721,24 @@ async def upload_customer_data(
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
 
-        # Create task entry immediately and preserve original uploaded data
-        enriched_customers[task_id] = {
-            "task_id": task_id,
-            "organization_id": current_user["organization_id"],
-            "status": "processing",
-            "original_count": len(original_rows),
-            "enriched_count": 0,
-            "original_data": original_rows,
-            "enriched_data": [],
-            "created_at": datetime.utcnow().isoformat()
-        }
+        try:
+            db_task = EnrichmentTask(
+                id=task_id,
+                organization_id=current_user["organization_id"],
+                status=TaskStatus.RUNNING,
+                original_count=len(original_rows),
+                enriched_count=0,
+                error=None,
+                created_at=datetime.utcnow(),
+                started_at=datetime.utcnow(),
+                completed_at=None,
+                updated_at=datetime.utcnow(),
+            )
+            db.add(db_task)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to persist enrichment task: {str(e)}")
         
         # Start enrichment task
         background_tasks.add_task(
@@ -395,10 +759,24 @@ async def upload_customer_data(
 
 async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], org_id: str):
     """Background task for customer data enrichment"""
+    db = SessionLocal()
     try:
+        db_task = (
+            db.query(EnrichmentTask)
+            .filter(
+                EnrichmentTask.id == task_id,
+                EnrichmentTask.organization_id == org_id,
+            )
+            .first()
+        )
+        if db_task:
+            db_task.status = TaskStatus.RUNNING
+            db_task.updated_at = datetime.utcnow()
+            db.commit()
+
         enriched_data = []
         
-        for customer in customer_data:
+        for idx, customer in enumerate(customer_data):
             enriched_customer = customer.copy()
             
             # TODO: Integrate with Clearbit, Hunter.io, FullContact APIs
@@ -413,29 +791,50 @@ async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], or
                 })
             
             enriched_data.append(enriched_customer)
+
+            db.add(
+                EnrichmentRow(
+                    id=str(uuid.uuid4()),
+                    task_id=task_id,
+                    organization_id=org_id,
+                    row_index=idx,
+                    original_data=customer,
+                    enriched_data=enriched_customer,
+                    created_at=datetime.utcnow(),
+                )
+            )
         
-        enriched_customers[task_id] = {
-            "task_id": task_id,
-            "organization_id": org_id,
-            "status": "completed",
-            "original_count": len(customer_data),
-            "enriched_count": len(enriched_data),
-            "original_data": customer_data,
-            "enriched_data": enriched_data,
-            "completed_at": datetime.utcnow().isoformat()
-        }
+        if db_task:
+            db_task.status = TaskStatus.COMPLETED
+            db_task.enriched_count = len(enriched_data)
+            db_task.error = None
+            db_task.completed_at = datetime.utcnow()
+            db_task.updated_at = datetime.utcnow()
+        db.commit()
+
     except Exception as e:
-        enriched_customers[task_id] = {
-            "task_id": task_id,
-            "organization_id": org_id,
-            "status": "failed",
-            "original_count": len(customer_data),
-            "enriched_count": 0,
-            "original_data": customer_data,
-            "enriched_data": [],
-            "error": str(e),
-            "completed_at": datetime.utcnow().isoformat()
-        }
+        db.rollback()
+        try:
+            db_task = (
+                db.query(EnrichmentTask)
+                .filter(
+                    EnrichmentTask.id == task_id,
+                    EnrichmentTask.organization_id == org_id,
+                )
+                .first()
+            )
+            if db_task:
+                db_task.status = TaskStatus.FAILED
+                db_task.enriched_count = 0
+                db_task.error = str(e)
+                db_task.completed_at = datetime.utcnow()
+                db_task.updated_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+
+    finally:
+        db.close()
 
 @app.get("/api/enrichment/status/{task_id}", tags=["Data Enrichment"])
 async def get_enrichment_status(
@@ -444,12 +843,27 @@ async def get_enrichment_status(
     db: Session = Depends(get_db)
 ):
     """Get enrichment task status"""
-    if task_id not in enriched_customers:
+    org_id = current_user["organization_id"]
+    db_task = (
+        db.query(EnrichmentTask)
+        .filter(
+            EnrichmentTask.id == task_id,
+            EnrichmentTask.organization_id == org_id,
+        )
+        .first()
+    )
+    if not db_task:
         raise HTTPException(status_code=404, detail="Enrichment task not found")
-    
-    task_data = enriched_customers[task_id]
-    if task_data["organization_id"] != current_user["organization_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+
+    db_rows = (
+        db.query(EnrichmentRow)
+        .filter(
+            EnrichmentRow.task_id == task_id,
+            EnrichmentRow.organization_id == org_id,
+        )
+        .all()
+    )
+    task_data = _enrichment_task_to_legacy_payload(db_task, db_rows)
     
     return {
         "success": True,
@@ -463,11 +877,23 @@ async def list_enrichment_tasks(
 ):
     """List all enrichment tasks for organization"""
     org_id = current_user["organization_id"]
-    tasks = [
-        task_data
-        for task_data in enriched_customers.values()
-        if task_data.get("organization_id") == org_id
-    ]
+    db_tasks = (
+        db.query(EnrichmentTask)
+        .filter(EnrichmentTask.organization_id == org_id)
+        .order_by(EnrichmentTask.created_at.desc())
+        .all()
+    )
+    tasks = []
+    for task in db_tasks:
+        db_rows = (
+            db.query(EnrichmentRow)
+            .filter(
+                EnrichmentRow.task_id == task.id,
+                EnrichmentRow.organization_id == org_id,
+            )
+            .all()
+        )
+        tasks.append(_enrichment_task_to_legacy_payload(task, db_rows))
 
     return {
         "success": True,
