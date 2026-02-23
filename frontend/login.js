@@ -79,7 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const password = document.getElementById('password')?.value || '';
 
         if (!organization_name || !user_id || !password) {
-            showToast('error', 'Organization Name, Email, and Password are required.');
+            showToast('error', 'Organization Name, User ID, and Password are required.');
             return;
         }
 

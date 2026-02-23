@@ -232,13 +232,16 @@ function sleep(ms) {
 }
 
 function normalizeApiLead(lead) {
+    const safeLead = (lead && typeof lead === 'object') ? lead : {};
+
     return {
-        businessName: lead.business_name || 'N/A',
-        address: lead.address || 'N/A',
-        phone: lead.phone || 'N/A',
-        website: lead.website || 'N/A',
-        rating: lead.rating ?? '-',
-        category: lead.category || 'N/A'
+        ...safeLead,
+        businessName: safeLead.businessName || safeLead.business_name || safeLead.name || 'N/A',
+        address: safeLead.address || safeLead.location || safeLead.formatted_address || 'N/A',
+        phone: safeLead.phone || 'N/A',
+        website: safeLead.website || safeLead.url || safeLead.html_url || 'N/A',
+        rating: safeLead.rating ?? '-',
+        category: safeLead.category || safeLead.business_type || 'N/A'
     };
 }
 
@@ -450,6 +453,8 @@ function setupEventListeners() {
     if (leadScraperForm) {
         leadScraperForm.addEventListener('submit', handleLeadScraping);
     }
+
+    setupSourceSelectionControls();
 
     // Range slider for radius
     const radiusSlider = document.getElementById('radius');
@@ -799,6 +804,88 @@ function displayStrategyResults(strategy) {
 }
 
 // Lead Scraper Functions
+function getNormalizedSelectedSources() {
+    const selectedValues = Array.from(
+        document.querySelectorAll('#sourceSelection input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
+
+    if (selectedValues.includes('all')) {
+        return ['github', 'google_maps', 'linkedin', 'volza'];
+    }
+
+    return Array.from(new Set(selectedValues.filter(value => value !== 'all')));
+}
+
+function setupSourceSelectionControls() {
+    const sourceContainer = document.getElementById('sourceSelection');
+    if (!sourceContainer) return;
+
+    const allCheckbox = sourceContainer.querySelector('input[type="checkbox"][value="all"]');
+    const individualCheckboxes = Array.from(
+        sourceContainer.querySelectorAll('input[type="checkbox"]:not([value="all"])')
+    );
+
+    if (!allCheckbox || individualCheckboxes.length === 0) return;
+
+    allCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            individualCheckboxes.forEach(cb => {
+                cb.checked = true;
+            });
+        }
+    });
+
+    individualCheckboxes.forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (!cb.checked) {
+                allCheckbox.checked = false;
+                return;
+            }
+
+            if (individualCheckboxes.every(input => input.checked)) {
+                allCheckbox.checked = true;
+            }
+        });
+    });
+}
+
+function renderSourceResultsSummary(results = {}, summary = null) {
+    const container = document.getElementById('sourceResultsSummary');
+    if (!container) return;
+
+    const safeResults = (results && typeof results === 'object') ? results : {};
+    const entries = Object.entries(safeResults);
+    const safeSummary = (summary && typeof summary === 'object') ? summary : null;
+
+    if (entries.length === 0 && !safeSummary) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const sourceRows = entries.map(([source, sourceResult]) => {
+        const isSuccess = sourceResult?.status === 'success';
+        const label = source.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+        if (isSuccess) {
+            const leadCount = Array.isArray(sourceResult?.leads) ? sourceResult.leads.length : 0;
+            return `<div class="status status--success" style="margin-bottom: 8px;">${label}: ${leadCount} leads</div>`;
+        }
+
+        const message = sourceResult?.message || 'Source failed.';
+        const cleanMessage = message.includes('API key')
+            ? 'API key not configured.'
+            : message;
+
+        return `<div class="status status--error" style="margin-bottom: 8px;">${label}: ${cleanMessage}</div>`;
+    }).join('');
+
+    const summaryHtml = safeSummary
+        ? `<div class="summary-box"><span>Total: ${Number(safeSummary.total_sources_requested) || 0}</span><span class="success-count">Successful: ${Number(safeSummary.successful_sources) || 0}</span><span class="failed-count">Failed: ${Number(safeSummary.failed_sources) || 0}</span></div>`
+        : '';
+
+    container.innerHTML = summaryHtml + sourceRows;
+}
+
 function handleLeadScraping(e) {
     e.preventDefault();
     console.log('Lead scraping form submitted');
@@ -807,12 +894,19 @@ function handleLeadScraping(e) {
     const businessType = document.getElementById('businessType').value;
     const radius = document.getElementById('radius').value;
     const additionalFilters = document.getElementById('additionalFilters').value;
+    const sources = getNormalizedSelectedSources();
+
+    if (sources.length === 0) {
+        showErrorMessage('Please select at least one source.');
+        return;
+    }
     
     const searchParams = {
         location,
         businessType,
         radius,
-        additionalFilters
+        additionalFilters,
+        sources
     };
     
     startLeadScraping(searchParams);
@@ -834,13 +928,15 @@ async function startLeadScraping(params) {
     progressDiv.classList.remove('hidden');
     resultsDiv.classList.add('hidden');
     if (noResultsDiv) noResultsDiv.classList.add('hidden');
+    renderSourceResultsSummary();
 
     try {
         const scrapeRequest = {
             location: params.location,
             business_type: params.businessType,
             radius: Number(params.radius) || 10,
-            max_results: 25
+            max_results: 25,
+            sources: Array.isArray(params.sources) ? params.sources : ['github']
         };
 
         const startResponse = await apiRequest('/api/leads/scrape', 'POST', scrapeRequest);
@@ -871,8 +967,14 @@ async function startLeadScraping(params) {
             // status === "processing" => continue polling
         }
 
-        if (!taskData || taskData.status !== 'completed') {
+        renderSourceResultsSummary(taskData?.results || {}, taskData?.summary || null);
+
+        if (!taskData || (taskData.status !== 'completed' && taskData.status !== 'failed')) {
             throw new Error(taskData?.error || 'Lead scraping did not complete in time.');
+        }
+
+        if (taskData.status === 'failed') {
+            throw new Error(taskData?.error || 'Lead scraping failed.');
         }
 
         const normalizedLeads = Array.isArray(taskData.leads)
@@ -948,7 +1050,22 @@ function displayScrapedLeads(leads) {
         return `<a href="${escapeHtml(href)}" target="_blank">${escapeHtml(website)}</a>`;
     };
 
-    tbody.innerHTML = safeLeads.map((leadRaw) => {
+    const renderLeadDetails = (lead) => {
+        const metadata = (lead && typeof lead.metadata === 'object' && lead.metadata) ? lead.metadata : {};
+        const topRepos = Array.isArray(metadata.top_repos) ? metadata.top_repos : [];
+        const bio = metadata.bio || 'N/A';
+        const followers = metadata.followers ?? 'N/A';
+        const publicRepos = metadata.public_repos ?? 'N/A';
+
+        return `
+            <div><strong>Followers:</strong> ${escapeHtml(followers)}</div>
+            <div><strong>Public Repos:</strong> ${escapeHtml(publicRepos)}</div>
+            <div><strong>Top Repos:</strong> ${topRepos.length ? topRepos.map(repo => escapeHtml(repo)).join(', ') : 'N/A'}</div>
+            <div><strong>Bio:</strong> ${escapeHtml(bio)}</div>
+        `;
+    };
+
+    tbody.innerHTML = safeLeads.map((leadRaw, index) => {
         const lead = (leadRaw && typeof leadRaw === 'object') ? leadRaw : {};
 
         const businessName = getFirstAvailable(lead, ['business_name', 'businessName', 'name', 'login']);
@@ -957,26 +1074,22 @@ function displayScrapedLeads(leads) {
         const websiteValue = getFirstAvailable(lead, ['website', 'websites', 'url', 'html_url']);
         const rating = getFirstAvailable(lead, ['rating', 'score', 'stars'], 'N/A');
         const category = getFirstAvailable(lead, ['category', 'business_type', 'type'], 'N/A');
-
-        const knownKeys = new Set([
-            'business_name', 'businessName', 'name', 'login',
-            'address', 'location', 'formatted_address',
-            'phone', 'phones', 'contact_numbers',
-            'website', 'websites', 'url', 'html_url',
-            'rating', 'score', 'stars',
-            'category', 'business_type', 'type'
-        ]);
-
-        const extraFields = Object.entries(lead)
-            .filter(([k]) => !knownKeys.has(k))
-            .map(([k, v]) => `<div><strong>${escapeHtml(titleize(k))}:</strong> ${formatValue(v)}</div>`)
-            .join('');
+        const source = String(getFirstAvailable(lead, ['source'], 'unknown')).toLowerCase();
+        const sourceLabel = titleize(source);
+        const sourceClass = source.replace(/[^a-z0-9_-]/g, '');
+        const detailsId = `leadDetails_${index}`;
 
         return `
             <tr>
                 <td>
                     <strong>${escapeHtml(businessName)}</strong>
-                    ${extraFields ? `<div style="margin-top:6px; font-size:12px;">${extraFields}</div>` : ''}
+                    <span class="source-badge source-badge--${escapeHtml(sourceClass)}">${escapeHtml(sourceLabel)}</span>
+                    <div style="margin-top:6px;">
+                        <button type="button" class="btn btn--outline btn--sm lead-details-toggle" data-target="${detailsId}">View Details</button>
+                    </div>
+                    <div id="${detailsId}" class="lead-details hidden" style="margin-top:6px; font-size:12px;">
+                        ${renderLeadDetails(lead)}
+                    </div>
                 </td>
                 <td>${formatValue(address)}</td>
                 <td>${phone}</td>
@@ -986,6 +1099,17 @@ function displayScrapedLeads(leads) {
             </tr>
         `;
     }).join('');
+
+    tbody.querySelectorAll('.lead-details-toggle').forEach(button => {
+        button.addEventListener('click', function() {
+            const targetId = this.getAttribute('data-target');
+            const detailsEl = targetId ? document.getElementById(targetId) : null;
+            if (!detailsEl) return;
+
+            detailsEl.classList.toggle('hidden');
+            this.textContent = detailsEl.classList.contains('hidden') ? 'View Details' : 'Hide Details';
+        });
+    });
 
     const exportBtn = document.getElementById('exportLeads');
     if (exportBtn) {

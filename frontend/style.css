@@ -1623,3 +1623,41 @@ select.form-control {
   border-color: rgba(192, 21, 47, 0.2);
   color: var(--color-error);
 }
+
+
+.source-divider {
+  border: 0;
+  border-top: 1px solid rgba(255,255,255,0.15);
+  margin: 8px 0;
+}
+
+.source-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 12px;
+  margin-left: 6px;
+  background-color: rgba(255,255,255,0.14);
+  color: var(--color-text);
+}
+
+.source-badge--github {
+  background-color: #24292e;
+  color: #fff;
+}
+
+.summary-box {
+  margin-bottom: 12px;
+}
+
+.summary-box span {
+  margin-right: 12px;
+}
+
+.success-count {
+  color: #4caf50;
+}
+
+.failed-count {
+  color: #ff4d4f;
+}

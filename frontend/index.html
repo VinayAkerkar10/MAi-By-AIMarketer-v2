@@ -236,6 +236,30 @@
                                     <label class="form-label" for="additionalFilters">Additional Filters</label>
                                     <input type="text" class="form-control" id="additionalFilters" placeholder="e.g., minimum rating, hours open">
                                 </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Source Selection</label>
+                                    <div id="sourceSelection" class="checkbox-group">
+                                        <div class="source-options">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="github" checked> GitHub
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="google_maps"> Google Maps
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="linkedin"> LinkedIn
+                                            </label>
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" value="volza"> Volza
+                                            </label>
+                                        </div>
+                                        <hr class="source-divider">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" value="all"> All
+                                        </label>
+                                    </div>
+                                </div>
                                 
                                 <button type="submit" class="btn btn--primary btn--full-width">Start Scraping</button>
                             </form>
@@ -254,6 +278,8 @@
                                 </div>
                                 <p>Scraping leads... <span id="progressText">0%</span></p>
                             </div>
+
+                            <div id="sourceResultsSummary"></div>
                             
                             <div id="leadsResults" class="hidden">
                                 <div class="table-responsive">

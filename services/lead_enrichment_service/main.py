@@ -4,7 +4,7 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import uuid
 import pandas as pd
@@ -39,15 +39,142 @@ enriched_customers = {}
 
 # ===== REQUEST MODELS =====
 
-from typing import Optional
 
 class LeadScrapingRequest(BaseModel):
     location: str = Field(..., description="Geographic location for lead search")
     business_type: str = Field(..., description="Type of businesses to search for")
     radius: Optional[int] = Field(10, description="Search radius in kilometers")
     max_results: Optional[int] = Field(100, description="Maximum number of results")
+    sources: Optional[List[str]] = Field(None, description="Lead sources to query")
 
 # ===== LEAD SCRAPING =====
+
+SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza"]
+SOURCE_API_KEY_ENV = {
+    "google_maps": "GOOGLE_MAPS_API_KEY",
+    "linkedin": "LINKEDIN_API_KEY",
+    "volza": "VOLZA_API_KEY"
+}
+
+
+def _normalize_sources(sources: Optional[List[str]]) -> List[str]:
+    if not sources:
+        return ["github"]
+
+    normalized: List[str] = []
+    for source in sources:
+        value = str(source or "").strip().lower()
+        if not value:
+            continue
+        if value == "all":
+            return SUPPORTED_SOURCES.copy()
+        if value in SUPPORTED_SOURCES and value not in normalized:
+            normalized.append(value)
+
+    return normalized
+
+
+async def _scrape_github_leads(request: LeadScrapingRequest) -> Tuple[str, List[Dict[str, Any]], str]:
+    token = os.getenv("GITHUB_API_TOKEN")
+    if not token:
+        return "error", [], "GitHub API token not configured."
+
+    max_results = max(1, min(int(request.max_results or 30), 30))
+    query = f"location:{request.location} {request.business_type} in:bio"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            search_response = await client.get(
+                "https://api.github.com/search/users",
+                params={
+                    "q": query,
+                    "per_page": max_results,
+                    "page": 1,
+                    "type": "Users",
+                },
+                headers=headers,
+            )
+
+            if search_response.status_code == 403:
+                remaining = search_response.headers.get("X-RateLimit-Remaining", "")
+                if remaining == "0":
+                    return "error", [], "GitHub API rate limit exceeded."
+                return "error", [], "GitHub API access forbidden."
+
+            if search_response.status_code != 200:
+                return "error", [], f"GitHub API returned status {search_response.status_code}."
+
+            search_json = search_response.json() if search_response.content else {}
+            items = search_json.get("items", []) if isinstance(search_json, dict) else []
+
+            leads: List[Dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                username = item.get("login")
+                if not username:
+                    continue
+
+                user_response = await client.get(
+                    f"https://api.github.com/users/{username}",
+                    headers=headers,
+                )
+                if user_response.status_code == 403 and user_response.headers.get("X-RateLimit-Remaining") == "0":
+                    return "error", leads, "GitHub API rate limit exceeded."
+                if user_response.status_code != 200:
+                    continue
+
+                user_data = user_response.json() if user_response.content else {}
+                if not isinstance(user_data, dict):
+                    continue
+
+                repos_response = await client.get(
+                    f"https://api.github.com/users/{username}/repos",
+                    params={"sort": "updated", "per_page": 5},
+                    headers=headers,
+                )
+
+                repos_data = repos_response.json() if repos_response.status_code == 200 and repos_response.content else []
+                top_repos = [
+                    repo.get("name")
+                    for repo in repos_data[:3]
+                    if isinstance(repo, dict) and repo.get("name")
+                ]
+
+                business_name = user_data.get("company") or user_data.get("login") or username
+                website = user_data.get("blog") or user_data.get("html_url") or "N/A"
+
+                lead = {
+                    "business_name": business_name,
+                    "contact_name": user_data.get("name") or "N/A",
+                    "email": user_data.get("email") or "N/A",
+                    "phone": None,
+                    "website": website,
+                    "address": user_data.get("location") or request.location,
+                    "source": "github",
+                    "category": request.business_type,
+                    "scraped_at": datetime.utcnow().isoformat(),
+                    "metadata": {
+                        "followers": user_data.get("followers", 0),
+                        "public_repos": user_data.get("public_repos", 0),
+                        "top_repos": top_repos,
+                        "bio": user_data.get("bio") or "",
+                    },
+                }
+                leads.append(lead)
+
+            return "success", leads, ""
+    except Exception as e:
+        return "error", [], f"GitHub scraping failed: {str(e)}"
+
 
 @app.post("/api/leads/scrape", tags=["Lead Generation"])
 async def start_lead_scraping(
@@ -56,24 +183,30 @@ async def start_lead_scraping(
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
     db: Session = Depends(get_db)
 ):
-    """Start Google Maps lead scraping task"""
+    """Start lead scraping task"""
     try:
+        selected_sources = _normalize_sources(request.sources)
+        if not selected_sources:
+            raise HTTPException(status_code=422, detail="At least one valid source is required")
+
         task_id = str(uuid.uuid4())
-        
+
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
 
         # Create task record immediately so GET /api/leads/{task_id} never 404s due to timing
+        search_params = request.dict()
+        search_params["sources"] = selected_sources
         leads_data[task_id] = {
             "task_id": task_id,
             "organization_id": current_user["organization_id"],
             "status": "processing",
             "leads": [],
             "total_found": 0,
-            "search_params": request.dict(),
+            "search_params": search_params,
             "created_at": datetime.utcnow().isoformat()
         }
-        
+
         # Start background task
         background_tasks.add_task(
             _scrape_leads_task,
@@ -81,128 +214,83 @@ async def start_lead_scraping(
             request,
             current_user["organization_id"]
         )
-        
+
         return {
             "success": True,
             "message": "Lead scraping task started",
             "task_id": task_id,
             "estimated_completion": "5-10 minutes"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start lead scraping: {str(e)}")
 
 
 async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id: str):
-    """Background task for lead scraping"""
+    """Background task for multi-source lead scraping"""
     try:
-        import httpx
+        sources = _normalize_sources(request.sources)
+        results: Dict[str, Dict[str, Any]] = {}
+        all_leads: List[Dict[str, Any]] = []
 
+        for source in sources:
+            if source == "github":
+                status, leads, message = await _scrape_github_leads(request)
+                if status == "success":
+                    results[source] = {
+                        "status": "success",
+                        "leads": leads,
+                    }
+                    all_leads.extend(leads)
+                else:
+                    results[source] = {
+                        "status": "error",
+                        "message": message or "GitHub scraping failed.",
+                    }
+                continue
 
-        try:
-            github_status_code = None
-            max_results = max(1, min(int(request.max_results or 1), 100))
-
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    "https://api.github.com/search/users",
-                    params={"q": request.business_type, "per_page": max_results},
-                )
-                github_status_code = response.status_code
-
-                if response.status_code in (403, 429):
-                    raise Exception(f"GitHub API rate-limited or forbidden: {response.status_code}")
-                if response.status_code != 200:
-                    raise Exception(f"GitHub API returned status {response.status_code}")
-
-                response_json = response.json()
-                items = response_json.get("items", []) if isinstance(response_json, dict) else []
-
-                sample_leads = []
-                for user in items:
-                    if not isinstance(user, dict):
-                        continue
-
-                    login = user.get("login")
-                    html_url = user.get("html_url")
-                    if not login or not html_url:
-                        continue
-
-                    posts = []
-
-                    user_details_response = await client.get(
-                        f"https://api.github.com/users/{login}"
-                    )
-                    if user_details_response.status_code == 200:
-                        user_details = user_details_response.json()
-                        if isinstance(user_details, dict):
-                            bio = user_details.get("bio")
-                            if bio:
-                                posts.append({"text": bio, "source": "bio"})
-
-                    repos_response = await client.get(
-                        f"https://api.github.com/users/{login}/repos",
-                        params={"per_page": 5},
-                    )
-                    if repos_response.status_code == 200:
-                        repos_data = repos_response.json()
-                        if isinstance(repos_data, list):
-                            for repo in repos_data:
-                                if not isinstance(repo, dict):
-                                    continue
-                                description = repo.get("description")
-                                if description:
-                                    posts.append({"text": description, "source": "repo"})
-
-                    ranked_posts = rank_posts_for_lead(
-                        {"business_name": login},
-                        posts,
-                        request.location,
-                        request.business_type,
-                    )
-
-                    sample_leads.append(
-                        {
-                            "business_name": login,
-                            "address": "N/A",
-                            "phone": "N/A",
-                            "email": "N/A",
-                            "website": html_url,
-                            "rating": None,
-                            "category": request.business_type,
-                            "scraped_at": datetime.utcnow().isoformat(),
-                            "ranked_posts": ranked_posts,
-                        }
-                    )
-
-            if not sample_leads:
-                raise Exception("No valid users returned from GitHub API")
-
-        except Exception as e:
-            # TODO: Integrate with Google Maps API, Outscraper, or Apify
-            # Placeholder implementation
-            sample_leads = [
-                {
-                    "business_name": f"Tech Solutions {i}",
-                    "address": f"{100 + i} Business St, {request.location}",
-                    "phone": f"+1-555-{1000 + i}",
-                    "email": f"contact@techsolutions{i}.com",
-                    "website": f"https://techsolutions{i}.com",
-                    "rating": round(3.5 + (i % 2) * 0.8, 1),
-                    "category": request.business_type,
-                    "scraped_at": datetime.utcnow().isoformat()
+            env_var = SOURCE_API_KEY_ENV.get(source)
+            if env_var and not os.getenv(env_var):
+                source_label = source.replace("_", " ").title()
+                results[source] = {
+                    "status": "error",
+                    "message": f"{source_label} not configured. API key missing.",
                 }
-                for i in range(min(request.max_results, 25))
-            ]
+            else:
+                source_label = source.replace("_", " ").title()
+                results[source] = {
+                    "status": "error",
+                    "message": f"{source_label} source is not configured.",
+                }
 
-        leads_data[task_id] = {
+        successful_sources = sum(1 for data in results.values() if data.get("status") == "success")
+        failed_sources = len(results) - successful_sources
+
+        task_status = "completed" if successful_sources > 0 else "failed"
+        task_payload = {
             "task_id": task_id,
             "organization_id": org_id,
-            "status": "completed",
-            "leads": sample_leads,
-            "total_found": len(sample_leads),
-            "search_params": request.dict(),
-            "completed_at": datetime.utcnow().isoformat()
+            "status": task_status,
+            "leads": all_leads,
+            "total_found": len(all_leads),
+            "search_params": {
+                **request.dict(),
+                "sources": sources,
+            },
+            "results": results,
+            "summary": {
+                "total_sources_requested": len(sources),
+                "successful_sources": successful_sources,
+                "failed_sources": failed_sources,
+            },
+            "completed_at": datetime.utcnow().isoformat(),
         }
+
+        if task_status == "failed":
+            task_payload["error"] = "All selected sources failed."
+
+        leads_data[task_id] = task_payload
     except Exception as e:
         leads_data[task_id] = {
             "task_id": task_id,
@@ -221,11 +309,11 @@ async def get_scraped_leads(
     """Get scraped leads by task ID"""
     if task_id not in leads_data:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     task_data = leads_data[task_id]
     if task_data["organization_id"] != current_user["organization_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     return {
         "success": True,
         "data": task_data
