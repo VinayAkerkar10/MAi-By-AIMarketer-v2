@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     CheckConstraint,
     Index,
+    desc,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -98,6 +99,7 @@ class Organization(Base):
     usage_records = relationship("UsageRecord", back_populates="organization")
     campaigns = relationship("Campaign", back_populates="organization")
     campaign_metrics = relationship("CampaignMetric", back_populates="organization")
+    strategies = relationship("Strategy", back_populates="organization")
     lead_scrape_tasks = relationship("LeadScrapeTask", back_populates="organization")
     lead_source_runs = relationship("LeadSourceRun", back_populates="organization")
     lead_scrape_results = relationship("LeadScrapeResult", back_populates="organization")
@@ -242,6 +244,55 @@ class CampaignMetric(Base):
         CheckConstraint("conversion_rate >= 0", name="ck_campaign_metrics_conversion_rate_non_negative"),
         CheckConstraint("cpa >= 0", name="ck_campaign_metrics_cpa_non_negative"),
         Index("ix_campaign_metrics_org_campaign", "organization_id", "campaign_id"),
+    )
+
+
+class Strategy(Base):
+    __tablename__ = "strategies"
+
+    id = Column(String, primary_key=True, index=True)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    business_name = Column(String, nullable=False)
+    industry = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    organization = relationship("Organization", back_populates="strategies")
+    versions = relationship(
+        "StrategyVersion",
+        back_populates="strategy",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_strategies_org_created", "organization_id", "created_at"),
+        Index("ix_strategies_org_status", "organization_id", "status"),
+    )
+
+
+class StrategyVersion(Base):
+    __tablename__ = "strategy_versions"
+
+    id = Column(String, primary_key=True, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    business_profile_json = Column(JSON, nullable=True)
+    additional_context = Column(Text, nullable=True)
+    strategy_output_json = Column(JSON, nullable=False)
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_current = Column(Boolean, default=True, nullable=False)
+
+    strategy = relationship("Strategy", back_populates="versions")
+    organization = relationship("Organization")
+
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "version_no", name="uq_strategy_version"),
+        Index("ix_strategy_versions_strategy_version_desc", "strategy_id", desc("version_no")),
+        Index("ix_strategy_versions_org_generated_desc", "organization_id", desc("generated_at")),
     )
 
 

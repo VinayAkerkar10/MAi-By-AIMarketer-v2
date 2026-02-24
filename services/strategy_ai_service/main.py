@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from shared.database import get_db
+from sqlalchemy import func
+from shared.database import get_db, Strategy, StrategyVersion
 from shared.auth import get_current_user, require_feature, FeatureName
 from shared.strategy_providers import StrategyProviderFactory
 from shared.config import (
@@ -135,6 +136,77 @@ async def generate_marketing_strategy(
             }
         }
 
+        # Dual-write persistence (DB) without changing API response shape.
+        try:
+            org_id = current_user["organization_id"]
+
+            strategy_row = (
+                db.query(Strategy)
+                .filter(
+                    Strategy.organization_id == org_id,
+                    Strategy.business_name == profile.business_name,
+                )
+                .with_for_update()
+                .first()
+            )
+
+            if not strategy_row:
+                strategy_row = Strategy(
+                    id=str(uuid.uuid4()),
+                    organization_id=org_id,
+                    business_name=profile.business_name,
+                    industry=profile.industry,
+                    status="active",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(strategy_row)
+                db.flush()
+            else:
+                strategy_row.industry = profile.industry
+                strategy_row.updated_at = datetime.utcnow()
+
+            db.query(StrategyVersion).filter(
+                StrategyVersion.strategy_id == strategy_row.id,
+                StrategyVersion.organization_id == org_id,
+                StrategyVersion.is_current == True,
+            ).update(
+                {StrategyVersion.is_current: False},
+                synchronize_session=False,
+            )
+
+            max_version = (
+                db.query(func.max(StrategyVersion.version_no))
+                .filter(
+                    StrategyVersion.strategy_id == strategy_row.id,
+                    StrategyVersion.organization_id == org_id,
+                )
+                .scalar()
+            )
+            next_version = (int(max_version) if max_version else 0) + 1
+
+            db_version = StrategyVersion(
+                id=str(uuid.uuid4()),
+                strategy_id=strategy_row.id,
+                organization_id=org_id,
+                version_no=next_version,
+                business_profile_json=profile_dict,
+                additional_context=request.additional_context,
+                strategy_output_json=strategy,
+                provider=ai_strategy.get("provider", "unknown"),
+                model=ai_strategy.get("model", "unknown"),
+                generated_at=datetime.utcnow(),
+                is_current=True,
+            )
+            db.add(db_version)
+            db.commit()
+        except Exception as persist_error:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to persist strategy: {str(persist_error)}",
+            )
+
         return {
             "success": True,
             "strategy": strategy,
@@ -186,12 +258,120 @@ async def get_strategy_history(
     limit: int = 10
 ):
     """Get strategy generation history for the organization"""
-    # TODO: Store strategies in database
-    # For now, return placeholder
+    org_id = current_user["organization_id"]
+
+    strategy_rows = (
+        db.query(Strategy)
+        .filter(Strategy.organization_id == org_id)
+        .order_by(Strategy.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    strategies = []
+    for strategy in strategy_rows:
+        latest_version_no = (
+            db.query(func.max(StrategyVersion.version_no))
+            .filter(
+                StrategyVersion.strategy_id == strategy.id,
+                StrategyVersion.organization_id == org_id,
+            )
+            .scalar()
+        )
+
+        strategies.append(
+            {
+                "strategy_id": strategy.id,
+                "business_name": strategy.business_name,
+                "industry": strategy.industry,
+                "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
+                "latest_version_no": int(latest_version_no) if latest_version_no else 0,
+                "status": strategy.status,
+            }
+        )
+
     return {
         "success": True,
-        "strategies": [],
-        "message": "Strategy history will be stored in database"
+        "strategies": strategies,
+        "message": "Strategy history loaded from database"
+    }
+
+
+@app.get("/api/strategy/{strategy_id}/versions", tags=["Strategy"])
+async def get_strategy_versions(
+    strategy_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
+    db: Session = Depends(get_db),
+):
+    """Get all versions for a strategy"""
+    org_id = current_user["organization_id"]
+
+    strategy = (
+        db.query(Strategy)
+        .filter(
+            Strategy.id == strategy_id,
+            Strategy.organization_id == org_id,
+        )
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    version_rows = (
+        db.query(StrategyVersion)
+        .filter(
+            StrategyVersion.strategy_id == strategy_id,
+            StrategyVersion.organization_id == org_id,
+        )
+        .order_by(StrategyVersion.version_no.desc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "versions": [
+            {
+                "version_no": version.version_no,
+                "generated_at": version.generated_at.isoformat() if version.generated_at else None,
+                "is_current": version.is_current,
+                "provider": version.provider,
+                "model": version.model,
+            }
+            for version in version_rows
+        ],
+    }
+
+
+@app.get("/api/strategy/{strategy_id}/versions/{version_no}", tags=["Strategy"])
+async def get_strategy_version_detail(
+    strategy_id: str,
+    version_no: int,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
+    db: Session = Depends(get_db),
+):
+    """Get full strategy output for a specific version"""
+    org_id = current_user["organization_id"]
+
+    version_row = (
+        db.query(StrategyVersion)
+        .filter(
+            StrategyVersion.strategy_id == strategy_id,
+            StrategyVersion.version_no == version_no,
+            StrategyVersion.organization_id == org_id,
+        )
+        .first()
+    )
+
+    if not version_row:
+        raise HTTPException(status_code=404, detail="Strategy version not found")
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "version_no": version_row.version_no,
+        "strategy_output": version_row.strategy_output_json,
     }
 
 # Timeline generation removed - now using config-driven approach via load_timeline_config()
