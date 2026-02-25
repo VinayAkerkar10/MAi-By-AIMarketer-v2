@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import uuid
+from uuid import UUID
 import pandas as pd
 import io
 import sys
@@ -613,48 +614,6 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
     finally:
         db.close()
 
-@app.get("/api/leads/{task_id}", tags=["Lead Generation"])
-async def get_scraped_leads(
-    task_id: str,
-    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
-    db: Session = Depends(get_db)
-):
-    """Get scraped leads by task ID"""
-    org_id = current_user["organization_id"]
-    db_task = (
-        db.query(LeadScrapeTask)
-        .filter(
-            LeadScrapeTask.id == task_id,
-            LeadScrapeTask.organization_id == org_id,
-        )
-        .first()
-    )
-    if not db_task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    source_runs = (
-        db.query(LeadSourceRun)
-        .filter(
-            LeadSourceRun.task_id == task_id,
-            LeadSourceRun.organization_id == org_id,
-        )
-        .all()
-    )
-    lead_rows = (
-        db.query(LeadScrapeResult)
-        .filter(
-            LeadScrapeResult.task_id == task_id,
-            LeadScrapeResult.organization_id == org_id,
-        )
-        .all()
-    )
-    task_data = _lead_scrape_task_to_legacy_payload(db_task, source_runs, lead_rows)
-
-    return {
-        "success": True,
-        "data": task_data
-    }
-
 @app.get("/api/leads/tasks", tags=["Lead Generation"])
 async def list_scraped_lead_tasks(
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
@@ -692,6 +651,50 @@ async def list_scraped_lead_tasks(
     return {
         "success": True,
         "tasks": tasks
+    }
+
+@app.get("/api/leads/{task_id}", tags=["Lead Generation"])
+async def get_scraped_leads(
+    # task_id: str,
+    task_id: UUID,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+    db: Session = Depends(get_db)
+):
+    """Get scraped leads by task ID"""
+    org_id = current_user["organization_id"]
+    task_id = str(task_id)
+    db_task = (
+        db.query(LeadScrapeTask)
+        .filter(
+            LeadScrapeTask.id == task_id,
+            LeadScrapeTask.organization_id == org_id,
+        )
+        .first()
+    )
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    source_runs = (
+        db.query(LeadSourceRun)
+        .filter(
+            LeadSourceRun.task_id == task_id,
+            LeadSourceRun.organization_id == org_id,
+        )
+        .all()
+    )
+    lead_rows = (
+        db.query(LeadScrapeResult)
+        .filter(
+            LeadScrapeResult.task_id == task_id,
+            LeadScrapeResult.organization_id == org_id,
+        )
+        .all()
+    )
+    task_data = _lead_scrape_task_to_legacy_payload(db_task, source_runs, lead_rows)
+
+    return {
+        "success": True,
+        "data": task_data
     }
 
 # ===== DATA ENRICHMENT =====

@@ -349,13 +349,20 @@ async def execute_campaign(
     print(f"[campaign_debug] execute_campaign campaign_id={campaign_id} leads_returned={len(leads)}")
 
     sent = 0
-    if audience_source == "customer_upload":
+    if audience_source in {"customer_upload", "scraped_leads"}:
         subject = f"Campaign: {campaign.campaign_name or 'Marketing Campaign'}"
         body = campaign.content or "Hello, this is a campaign outreach message."
+        seen_emails = set()
         for lead in leads:
             email = (lead.get("email") or "").strip()
             if not email:
+                print("[smtp_debug] skip_missing_email", lead.get("id"), lead.get("source"))
                 continue
+            email_key = email.lower()
+            if email_key in seen_emails:
+                print("[smtp_debug] skip_duplicate_email", email)
+                continue
+            seen_emails.add(email_key)
             print("[smtp_debug] sending to", email)
             success = send_email_via_smtp(email, subject, body)
             print("[smtp_debug] send_success", success)
