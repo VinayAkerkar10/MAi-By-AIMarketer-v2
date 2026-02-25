@@ -6,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy import func, and_
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database import get_db, FeatureName, Campaign, CampaignMetric
+from shared.database import get_db, FeatureName, Campaign, CampaignMetric, LeadScrapeResult, EnrichmentRow
 from shared.auth import get_current_user, require_feature
 
 app = FastAPI(
@@ -93,14 +94,52 @@ async def get_lead_metrics(
     db: Session = Depends(get_db)
 ):
     """Get lead management metrics"""
-    # TODO: Fetch from database
+    org_id = current_user["organization_id"]
+
+    scraped_total = (
+        db.query(func.coalesce(func.count(LeadScrapeResult.id), 0))
+        .filter(LeadScrapeResult.organization_id == org_id)
+        .scalar()
+    ) or 0
+    enriched_total = (
+        db.query(func.coalesce(func.count(EnrichmentRow.id), 0))
+        .filter(EnrichmentRow.organization_id == org_id)
+        .scalar()
+    ) or 0
+
+    scraped_qualified = (
+        db.query(func.coalesce(func.count(LeadScrapeResult.id), 0))
+        .filter(
+            LeadScrapeResult.organization_id == org_id,
+            LeadScrapeResult.email.isnot(None),
+            LeadScrapeResult.email != ""
+        )
+        .scalar()
+    ) or 0
+    enriched_qualified = (
+        db.query(func.coalesce(func.count(EnrichmentRow.id), 0))
+        .filter(
+            EnrichmentRow.organization_id == org_id,
+            EnrichmentRow.enriched_data.isnot(None)
+        )
+        .scalar()
+    ) or 0
+
+    total_leads = int(scraped_total) + int(enriched_total)
+    qualified_leads = int(scraped_qualified) + int(enriched_qualified)
+    converted_leads = int(
+        (db.query(func.coalesce(func.sum(CampaignMetric.converted), 0))
+         .filter(CampaignMetric.organization_id == org_id)
+         .scalar()) or 0
+    )
+
     return {
         "success": True,
         "metrics": {
-            "total_leads": 0,
-            "qualified_leads": 0,
-            "converted_leads": 0,
-            "lead_quality_score": 0.0
+            "total_leads": total_leads,
+            "qualified_leads": qualified_leads,
+            "converted_leads": converted_leads,
+            "lead_quality_score": _safe_rate(qualified_leads, total_leads)
         }
     }
 
@@ -112,27 +151,34 @@ async def download_report(
     db: Session = Depends(get_db)
 ):
     """Download analytics report (aggregated from campaign + campaign_metrics tables)."""
-    rows = (
-        db.query(Campaign, CampaignMetric)
-        .outerjoin(CampaignMetric, CampaignMetric.campaign_id == Campaign.id)
-        .filter(Campaign.organization_id == current_user["organization_id"])
-        .all()
+    org_id = current_user["organization_id"]
+    agg = (
+        db.query(
+            func.coalesce(func.count(Campaign.id), 0).label("total_campaigns"),
+            func.coalesce(func.sum(CampaignMetric.sent), 0).label("total_sent"),
+            func.coalesce(func.sum(CampaignMetric.opened), 0).label("total_opened"),
+            func.coalesce(func.sum(CampaignMetric.clicked), 0).label("total_clicked"),
+            func.coalesce(func.sum(CampaignMetric.converted), 0).label("total_converted"),
+            func.coalesce(func.avg(CampaignMetric.roi), 0.0).label("avg_roi"),
+        )
+        .outerjoin(
+            CampaignMetric,
+            and_(
+                CampaignMetric.campaign_id == Campaign.id,
+                CampaignMetric.organization_id == Campaign.organization_id,
+            ),
+        )
+        .filter(Campaign.organization_id == org_id)
+        .one()
     )
 
-    total_sent = 0
-    total_opened = 0
-    total_clicked = 0
-    total_converted = 0
-
-    for _, metric_row in rows:
-        m = _ensure_metrics(metric_row)
-        total_sent += m["sent"]
-        total_opened += m["opened"]
-        total_clicked += m["clicked"]
-        total_converted += m["converted"]
+    total_sent = int(agg.total_sent or 0)
+    total_opened = int(agg.total_opened or 0)
+    total_clicked = int(agg.total_clicked or 0)
+    total_converted = int(agg.total_converted or 0)
 
     data = {
-        "total_campaigns": len(rows),
+        "total_campaigns": int(agg.total_campaigns or 0),
         "totals": {
             "sent": total_sent,
             "opened": total_opened,
@@ -142,7 +188,8 @@ async def download_report(
         "rates": {
             "open_rate": _safe_rate(total_opened, total_sent),
             "click_rate": _safe_rate(total_clicked, total_sent),
-            "conversion_rate": _safe_rate(total_converted, total_sent)
+            "conversion_rate": _safe_rate(total_converted, total_sent),
+            "roi": float(agg.avg_roi or 0.0),
         }
     }
 

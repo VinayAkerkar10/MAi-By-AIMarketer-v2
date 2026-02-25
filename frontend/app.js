@@ -99,7 +99,7 @@ function mapBackendAnalyticsToUIFormat(reportResponse) {
         totalLeads: sent,
         activeCampaigns: Number(reportData?.total_campaigns) || 0,
         conversionRate: Number(rates?.conversion_rate) || 0,
-        roi: 0,
+        roi: Number(rates?.roi) || 0,
         monthlyMetrics,
         funnelData: [sent, opened, clicked, converted]
     };
@@ -1788,7 +1788,7 @@ function updateAnalyticsDashboard(analyticsData) {
     if (totalLeadsEl) totalLeadsEl.textContent = Number(viewModel.totalLeads || 0).toLocaleString();
     if (activeCampaignsEl) activeCampaignsEl.textContent = Number(viewModel.activeCampaigns || 0);
     if (conversionRateEl) conversionRateEl.textContent = `${Number(viewModel.conversionRate || 0)}%`;
-    if (roiEl) roiEl.textContent = `${Number(viewModel.roi || 0)}%`;
+    if (roiEl) roiEl.textContent = `${Number(viewModel.roi || 0).toFixed(2)}%`;
 
     // Create charts with delay
     setTimeout(() => {
