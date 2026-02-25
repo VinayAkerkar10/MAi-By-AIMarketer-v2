@@ -176,6 +176,8 @@ class Campaign(Base):
 
     id = Column(String, primary_key=True, index=True)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True)
+    strategy_version_no = Column(Integer, nullable=True)
     campaign_name = Column(String, nullable=False, index=True)
     channels = Column(JSON, nullable=False, default=list)
     target_audience = Column(String, nullable=False)
@@ -209,6 +211,8 @@ class Campaign(Base):
         ),
         Index("ix_campaign_org_status", "organization_id", "status"),
         Index("ix_campaign_org_created", "organization_id", "created_at"),
+        Index("ix_campaigns_org_strategy", "organization_id", "strategy_id"),
+        Index("ix_campaigns_org_strategy_version", "organization_id", "strategy_id", "strategy_version_no"),
     )
 
 

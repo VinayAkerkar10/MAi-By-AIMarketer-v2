@@ -14,7 +14,7 @@ import httpx
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database import get_db, SessionLocal, FeatureName, Campaign, CampaignMetric
+from shared.database import get_db, SessionLocal, FeatureName, Campaign, CampaignMetric, Strategy, StrategyVersion
 from shared.auth import require_feature
 
 app = FastAPI(
@@ -47,6 +47,8 @@ class CampaignRequest(BaseModel):
     budget: Optional[float] = Field(None, description="Campaign budget")
     audience_source: Optional[str] = Field("scraped_leads", description="Audience source")
     manual_selection: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Manual selected leads")
+    strategy_id: Optional[str] = Field(None, description="Origin strategy ID")
+    strategy_version_no: Optional[int] = Field(None, description="Origin strategy version number")
 
 class CampaignUpdateRequest(BaseModel):
     campaign_name: Optional[str] = None
@@ -55,6 +57,45 @@ class CampaignUpdateRequest(BaseModel):
     content: Optional[str] = None
     schedule_date: Optional[datetime] = None
     budget: Optional[float] = None
+    strategy_id: Optional[str] = None
+    strategy_version_no: Optional[int] = None
+
+
+def _validate_strategy_link(
+    db: Session,
+    organization_id: str,
+    strategy_id: Optional[str],
+    strategy_version_no: Optional[int],
+) -> None:
+    if strategy_id is None and strategy_version_no is None:
+        return
+
+    if strategy_id is None and strategy_version_no is not None:
+        raise HTTPException(status_code=400, detail="strategy_id is required when strategy_version_no is provided")
+
+    strategy = (
+        db.query(Strategy)
+        .filter(
+            Strategy.id == strategy_id,
+            Strategy.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(status_code=400, detail="Invalid strategy_id for organization")
+
+    if strategy_version_no is not None:
+        version = (
+            db.query(StrategyVersion)
+            .filter(
+                StrategyVersion.strategy_id == strategy_id,
+                StrategyVersion.organization_id == organization_id,
+                StrategyVersion.version_no == strategy_version_no,
+            )
+            .first()
+        )
+        if not version:
+            raise HTTPException(status_code=400, detail="Invalid strategy_version_no for strategy")
 
 
 def _as_non_negative_int(value: Any) -> int:
@@ -427,9 +468,18 @@ async def create_campaign(
         )
 
         try:
+            _validate_strategy_link(
+                db=db,
+                organization_id=current_user["organization_id"],
+                strategy_id=campaign.strategy_id,
+                strategy_version_no=campaign.strategy_version_no,
+            )
+
             db_campaign = Campaign(
                 id=campaign_id,
                 organization_id=current_user["organization_id"],
+                strategy_id=campaign.strategy_id,
+                strategy_version_no=campaign.strategy_version_no,
                 campaign_name=campaign.campaign_name,
                 channels=campaign.channels,
                 target_audience=campaign.target_audience,
@@ -636,6 +686,17 @@ async def update_campaign(
             .first()
         )
         if db_campaign:
+            strategy_id_to_validate = payload.strategy_id if payload.strategy_id is not None else db_campaign.strategy_id
+            strategy_version_to_validate = (
+                payload.strategy_version_no if payload.strategy_version_no is not None else db_campaign.strategy_version_no
+            )
+            _validate_strategy_link(
+                db=db,
+                organization_id=current_user["organization_id"],
+                strategy_id=strategy_id_to_validate,
+                strategy_version_no=strategy_version_to_validate,
+            )
+
             if payload.campaign_name is not None:
                 db_campaign.campaign_name = payload.campaign_name
             if payload.channels is not None:
@@ -648,6 +709,10 @@ async def update_campaign(
                 db_campaign.schedule_date = payload.schedule_date
             if payload.budget is not None:
                 db_campaign.budget = payload.budget
+            if payload.strategy_id is not None:
+                db_campaign.strategy_id = payload.strategy_id
+            if payload.strategy_version_no is not None:
+                db_campaign.strategy_version_no = payload.strategy_version_no
             db_campaign.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(db_campaign)
