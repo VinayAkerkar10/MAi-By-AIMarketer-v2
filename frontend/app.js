@@ -48,6 +48,14 @@ const BASE_API_URL = API_CONFIG.BASE_URL;
 const TOKEN_STORAGE_KEY = "access_token";
 const LOGIN_PAGE_PATH = "login.html";
 let analyticsRequestVersion = 0;
+let analyticsMode = "campaign_summary";
+let selectedStrategyId = "";
+let strategyOptions = [];
+let strategyVersionMetrics = [];
+let performanceChartMode = "campaign_summary";
+let campaignStrategyOptions = [];
+let campaignStrategyVersionOptions = [];
+let strategyVersionRequestToken = 0;
 
 function redirectToLogin() {
     const currentPath = window.location.pathname || "";
@@ -115,16 +123,198 @@ async function loadAnalytics() {
     }
 }
 
+function mapStrategyAnalyticsToUIFormat(strategyResponse) {
+    const overall = strategyResponse?.overall || {};
+    const byVersion = Array.isArray(strategyResponse?.by_version) ? strategyResponse.by_version : [];
+    strategyVersionMetrics = byVersion.map((row) => ({
+        strategy_version_no: Number(row?.strategy_version_no) || 0,
+        campaign_count: Number(row?.campaign_count) || 0,
+        avg_roi: Number(row?.avg_roi) || 0
+    }));
+
+    const sent = Number(overall.total_sent) || 0;
+    const opened = Number(overall.total_opened) || 0;
+    const clicked = Number(overall.total_clicked) || 0;
+    const converted = Number(overall.total_converted) || 0;
+
+    const monthlyMetrics = byVersion.length
+        ? byVersion.map((row) => ({
+            month: `Version ${Number(row.strategy_version_no) || 0}`,
+            leads: Number(row.avg_roi) || 0,
+            conversions: Number(row.total_converted) || 0
+        }))
+        : [{ month: 'Version 1', leads: 0, conversions: 0 }];
+
+    return {
+        totalLeads: sent,
+        activeCampaigns: Number(overall.campaign_count) || 0,
+        conversionRate: Number(overall.avg_conversion_rate) || 0,
+        roi: Number(overall.avg_roi) || 0,
+        monthlyMetrics,
+        funnelData: [sent, opened, clicked, converted]
+    };
+}
+
+async function loadStrategyOptions() {
+    try {
+        const response = await apiRequest('/api/strategy/history');
+        const rows = Array.isArray(response?.strategies) ? response.strategies : [];
+        strategyOptions = rows.map((item) => ({
+            id: item.strategy_id,
+            label: item.business_name || item.strategy_id
+        })).filter((item) => !!item.id);
+
+        const strategySelect = document.getElementById('strategySelect');
+        const strategyModeOption = document.querySelector('#analyticsModeSelect option[value="strategy_performance"]');
+        if (strategyModeOption) {
+            strategyModeOption.disabled = strategyOptions.length === 0;
+        }
+
+        if (strategySelect) {
+            strategySelect.innerHTML = strategyOptions.length
+                ? strategyOptions.map((item) => `<option value="${item.id}">${item.label}</option>`).join('')
+                : '<option value="">No strategies available</option>';
+            strategySelect.disabled = strategyOptions.length === 0;
+        }
+
+        if (strategyOptions.length > 0) {
+            if (!selectedStrategyId || !strategyOptions.some((opt) => opt.id === selectedStrategyId)) {
+                selectedStrategyId = strategyOptions[0].id;
+            }
+            if (strategySelect) strategySelect.value = selectedStrategyId;
+        } else {
+            selectedStrategyId = "";
+            if (analyticsMode === "strategy_performance") {
+                analyticsMode = "campaign_summary";
+                const modeSelect = document.getElementById('analyticsModeSelect');
+                if (modeSelect) modeSelect.value = analyticsMode;
+            }
+        }
+    } catch (error) {
+        console.error('Strategy options loading error:', error);
+        strategyOptions = [];
+    }
+}
+
+async function loadStrategyAnalytics(strategyId) {
+    if (!strategyId) {
+        return null;
+    }
+    try {
+        return await apiRequest(`/api/analytics/strategy/${encodeURIComponent(strategyId)}`);
+    } catch (error) {
+        console.error('Strategy analytics loading error:', error);
+        return null;
+    }
+}
+
+function syncAnalyticsControls() {
+    const modeSelect = document.getElementById('analyticsModeSelect');
+    const strategyWrapper = document.getElementById('strategySelectWrapper');
+    const strategySelect = document.getElementById('strategySelect');
+    const strategyBadge = document.getElementById('strategyModeBadge');
+
+    if (modeSelect) {
+        modeSelect.value = analyticsMode;
+    }
+    if (strategyWrapper) {
+        strategyWrapper.style.display = analyticsMode === 'strategy_performance' ? '' : 'none';
+    }
+    if (strategySelect && selectedStrategyId) {
+        strategySelect.value = selectedStrategyId;
+    }
+    if (strategyBadge) {
+        strategyBadge.classList.toggle('hidden', analyticsMode !== 'strategy_performance');
+    }
+}
+
+function setupAnalyticsControls() {
+    const modeSelect = document.getElementById('analyticsModeSelect');
+    const strategySelect = document.getElementById('strategySelect');
+
+    if (modeSelect && !modeSelect.dataset.bound) {
+        modeSelect.addEventListener('change', async function () {
+            analyticsMode = this.value;
+            if (analyticsMode === 'strategy_performance' && strategyOptions.length === 0) {
+                await loadStrategyOptions();
+            }
+            syncAnalyticsControls();
+            loadAndRenderAnalytics();
+        });
+        modeSelect.dataset.bound = '1';
+    }
+
+    if (strategySelect && !strategySelect.dataset.bound) {
+        strategySelect.addEventListener('change', function () {
+            selectedStrategyId = this.value || "";
+            loadAndRenderAnalytics();
+        });
+        strategySelect.dataset.bound = '1';
+    }
+}
+
 async function loadAndRenderAnalytics() {
     analyticsRequestVersion += 1;
     const localVersion = analyticsRequestVersion;
 
-    const analyticsData = await loadAnalytics();
+    setupAnalyticsControls();
+    syncAnalyticsControls();
+
+    let analyticsData = { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+    if (analyticsMode === 'strategy_performance') {
+        if (strategyOptions.length === 0) {
+            await loadStrategyOptions();
+            if (localVersion !== analyticsRequestVersion) {
+                return;
+            }
+            syncAnalyticsControls();
+        }
+
+        if (selectedStrategyId) {
+            const strategyResponse = await loadStrategyAnalytics(selectedStrategyId);
+            if (localVersion !== analyticsRequestVersion) {
+                return;
+            }
+            analyticsData = strategyResponse
+                ? mapStrategyAnalyticsToUIFormat(strategyResponse)
+                : { ...DEFAULT_ANALYTICS_VIEW_MODEL };
+            if (!strategyResponse) {
+                strategyVersionMetrics = [];
+            }
+        } else {
+            analyticsData = await loadAnalytics();
+            strategyVersionMetrics = [];
+        }
+    } else {
+        analyticsData = await loadAnalytics();
+        strategyVersionMetrics = [];
+    }
+
     if (localVersion !== analyticsRequestVersion) {
         return;
     }
 
     updateAnalyticsDashboard(analyticsData);
+    renderBestStrategyVersionHint();
+}
+
+function renderBestStrategyVersionHint() {
+    const hintEl = document.getElementById('bestStrategyVersionHint');
+    if (!hintEl) return;
+
+    if (analyticsMode !== 'strategy_performance' || strategyVersionMetrics.length === 0) {
+        hintEl.classList.add('hidden');
+        hintEl.textContent = '';
+        return;
+    }
+
+    const sorted = [...strategyVersionMetrics].sort((a, b) => b.avg_roi - a.avg_roi);
+    const best = sorted[0];
+    const baseline = sorted[sorted.length - 1];
+    const delta = best.avg_roi - baseline.avg_roi;
+
+    hintEl.textContent = `Best Performing Version: V${best.strategy_version_no} (${delta >= 0 ? '+' : ''}${delta.toFixed(2)}% vs V${baseline.strategy_version_no})`;
+    hintEl.classList.remove('hidden');
 }
 
 async function loginOrganization(credentials = null) {
@@ -406,6 +596,7 @@ function handleModuleSpecialInit(moduleId) {
             break;
         case 'campaign-manager':
             displayActiveCampaigns();
+            loadCampaignStrategyOptions();
             break;
         case 'templates':
             populateTemplateLibrary();
@@ -1465,9 +1656,103 @@ function setupCampaignManagerListeners() {
     if (createCampaignBtn) {
         createCampaignBtn.addEventListener('click', createCampaign);
     }
+
+    const campaignStrategy = document.getElementById('campaignStrategy');
+    if (campaignStrategy && !campaignStrategy.dataset.bound) {
+        campaignStrategy.addEventListener('change', handleCampaignStrategyChange);
+        campaignStrategy.dataset.bound = '1';
+    }
     
     // Load active campaigns
     loadCampaigns();
+    loadCampaignStrategyOptions();
+}
+
+function resetCampaignStrategyVersionDropdown() {
+    campaignStrategyVersionOptions = [];
+    const versionSelect = document.getElementById('campaignStrategyVersion');
+    const warningEl = document.getElementById('campaignStrategyWarning');
+    if (versionSelect) {
+        versionSelect.innerHTML = '<option value="">Select version</option>';
+        versionSelect.value = '';
+        versionSelect.disabled = true;
+    }
+    if (warningEl) {
+        warningEl.classList.add('hidden');
+    }
+}
+
+function populateCampaignStrategyVersionDropdown(versions) {
+    const versionSelect = document.getElementById('campaignStrategyVersion');
+    if (!versionSelect) return;
+
+    const safeVersions = Array.isArray(versions) ? versions : [];
+    campaignStrategyVersionOptions = safeVersions;
+
+    versionSelect.innerHTML = '<option value="">Select version</option>';
+    safeVersions.forEach((row) => {
+        const versionNo = Number(row?.version_no);
+        if (!Number.isFinite(versionNo)) return;
+        const option = document.createElement('option');
+        option.value = String(versionNo);
+        option.textContent = `Version ${versionNo}`;
+        versionSelect.appendChild(option);
+    });
+    versionSelect.disabled = safeVersions.length === 0;
+}
+
+async function loadCampaignStrategyOptions() {
+    const strategySelect = document.getElementById('campaignStrategy');
+    if (!strategySelect) return;
+
+    try {
+        const response = await apiRequest('/api/strategy/history');
+        const strategies = Array.isArray(response?.strategies) ? response.strategies : [];
+        campaignStrategyOptions = strategies
+            .map((item) => ({
+                id: item?.strategy_id,
+                label: item?.business_name || item?.strategy_id || 'Unknown Strategy'
+            }))
+            .filter((item) => !!item.id);
+
+        strategySelect.innerHTML = '<option value="">None</option>';
+        campaignStrategyOptions.forEach((item) => {
+            const option = document.createElement('option');
+            option.value = item.id;
+            option.textContent = item.label;
+            strategySelect.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Campaign strategy options loading error:', error);
+        campaignStrategyOptions = [];
+        strategySelect.innerHTML = '<option value="">None</option>';
+    } finally {
+        resetCampaignStrategyVersionDropdown();
+    }
+}
+
+async function handleCampaignStrategyChange(event) {
+    const strategyId = event?.target?.value || '';
+    const versionSelect = document.getElementById('campaignStrategyVersion');
+
+    resetCampaignStrategyVersionDropdown();
+    if (!strategyId) return;
+
+    if (versionSelect) {
+        versionSelect.disabled = true;
+    }
+
+    const requestToken = ++strategyVersionRequestToken;
+    try {
+        const response = await apiRequest(`/api/strategy/${encodeURIComponent(strategyId)}/versions`);
+        if (requestToken !== strategyVersionRequestToken) return;
+        const versions = Array.isArray(response?.versions) ? response.versions : [];
+        populateCampaignStrategyVersionDropdown(versions);
+    } catch (error) {
+        if (requestToken !== strategyVersionRequestToken) return;
+        console.error('Campaign strategy versions loading error:', error);
+        resetCampaignStrategyVersionDropdown();
+    }
 }
 
 async function loadCampaigns() {
@@ -1552,6 +1837,9 @@ async function createCampaign() {
     const campaignName = document.getElementById('campaignName');
     const campaignObjective = document.getElementById('campaignObjective');
     const audienceSource = document.getElementById('audienceSource');
+    const strategySelect = document.getElementById('campaignStrategy');
+    const strategyVersionSelect = document.getElementById('campaignStrategyVersion');
+    const strategyWarning = document.getElementById('campaignStrategyWarning');
     
     if (!campaignName || !campaignObjective) return;
     
@@ -1565,6 +1853,21 @@ async function createCampaign() {
     }
 
     try {
+        const strategyId = strategySelect?.value || '';
+        const strategyVersion = strategyVersionSelect?.value || '';
+
+        if (strategyWarning) {
+            strategyWarning.classList.add('hidden');
+        }
+        if (strategyVersion && !strategyId) {
+            if (strategyWarning) {
+                strategyWarning.classList.remove('hidden');
+            } else {
+                showErrorMessage('Please select a strategy before choosing a version.');
+            }
+            return;
+        }
+
         const channelContent = selectedChannels.map(channel => {
             const contentEl = document.getElementById(`${channel}-content`);
             const subjectEl = document.getElementById(`${channel}-subject`);
@@ -1584,6 +1887,12 @@ async function createCampaign() {
             schedule_date: null,
             budget: null
         };
+        if (strategyId) {
+            payload.strategy_id = strategyId;
+        }
+        if (strategyVersion && strategyId) {
+            payload.strategy_version_no = parseInt(strategyVersion, 10);
+        }
 
         console.log('[campaign_debug] createCampaign payload:', payload);
         await apiRequest('/api/campaigns/create', 'POST', payload);
@@ -1593,6 +1902,8 @@ async function createCampaign() {
         nextWizardStep(1);
         const form = document.getElementById('campaignDetailsForm');
         if (form) form.reset();
+        if (strategySelect) strategySelect.value = '';
+        resetCampaignStrategyVersionDropdown();
 
         showCampaignTab('active');
         setActiveCampaignTab(document.querySelector('[data-tab="active"]'));
@@ -1803,37 +2114,54 @@ function createPerformanceChart(analyticsData) {
 
     const viewModel = analyticsData || { ...DEFAULT_ANALYTICS_VIEW_MODEL };
     const labels = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.month) : [];
-    const leadsData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.leads) : [];
-    const conversionsData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.conversions) : [];
+    const primaryData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.leads) : [];
+    const secondaryData = Array.isArray(viewModel.monthlyMetrics) ? viewModel.monthlyMetrics.map(m => m.conversions) : [];
+    const isStrategyMode = analyticsMode === 'strategy_performance';
+    const desiredType = isStrategyMode ? 'bar' : 'line';
 
     try {
+        if (ctx.chart && performanceChartMode !== analyticsMode) {
+            ctx.chart.destroy();
+            ctx.chart = null;
+        }
+
         if (ctx.chart) {
             ctx.chart.data.labels = labels;
-            ctx.chart.data.datasets[0].data = leadsData;
-            ctx.chart.data.datasets[1].data = conversionsData;
+            ctx.chart.data.datasets[0].data = primaryData;
+            if (!isStrategyMode && ctx.chart.data.datasets[1]) {
+                ctx.chart.data.datasets[1].data = secondaryData;
+            }
             ctx.chart.update();
             return;
         }
 
         ctx.chart = new Chart(ctx, {
-            type: 'line',
+            type: desiredType,
             data: {
                 labels,
-                datasets: [{
-                    label: 'Leads Generated',
-                    data: leadsData,
-                    borderColor: '#1FB8CD',
-                    backgroundColor: 'rgba(31, 184, 205, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }, {
-                    label: 'Conversions',
-                    data: conversionsData,
-                    borderColor: '#FFC185',
-                    backgroundColor: 'rgba(255, 193, 133, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
+                datasets: isStrategyMode
+                    ? [{
+                        label: 'Average ROI (%)',
+                        data: primaryData,
+                        borderColor: '#1FB8CD',
+                        backgroundColor: 'rgba(31, 184, 205, 0.35)',
+                        borderWidth: 1,
+                    }]
+                    : [{
+                        label: 'Leads Generated',
+                        data: primaryData,
+                        borderColor: '#1FB8CD',
+                        backgroundColor: 'rgba(31, 184, 205, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }, {
+                        label: 'Conversions',
+                        data: secondaryData,
+                        borderColor: '#FFC185',
+                        backgroundColor: 'rgba(255, 193, 133, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
             },
             options: {
                 responsive: true,
@@ -1841,7 +2169,18 @@ function createPerformanceChart(analyticsData) {
                 plugins: {
                     legend: {
                         position: 'top',
-                    }
+                    },
+                    tooltip: isStrategyMode ? {
+                        callbacks: {
+                            label: function(context) {
+                                const idx = context.dataIndex;
+                                const info = strategyVersionMetrics[idx] || {};
+                                const roi = Number(info.avg_roi || 0).toFixed(2);
+                                const campaigns = Number(info.campaign_count || 0);
+                                return [`Avg ROI: ${roi}%`, `Campaigns: ${campaigns}`];
+                            }
+                        }
+                    } : undefined
                 },
                 scales: {
                     y: {
@@ -1850,6 +2189,7 @@ function createPerformanceChart(analyticsData) {
                 }
             }
         });
+        performanceChartMode = analyticsMode;
     } catch (error) {
         console.error('Error creating performance chart:', error);
     }

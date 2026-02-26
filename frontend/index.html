@@ -412,6 +412,23 @@
                                                 <option value="Product Launch">Product Launch</option>
                                             </select>
                                         </div>
+
+                                        <div class="form-group">
+                                            <label class="form-label" for="campaignStrategy">Strategy (Optional)</label>
+                                            <select class="form-control" id="campaignStrategy">
+                                                <option value="">None</option>
+                                            </select>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label class="form-label" for="campaignStrategyVersion">Strategy Version (Optional)</label>
+                                            <select class="form-control" id="campaignStrategyVersion" disabled>
+                                                <option value="">Select version</option>
+                                            </select>
+                                            <div id="campaignStrategyWarning" class="hidden" style="margin-top: 6px; color: var(--color-error); font-size: 12px;">
+                                                Please select a strategy before choosing a version.
+                                            </div>
+                                        </div>
                                         
                                         <button type="button" class="btn btn--primary" onclick="nextWizardStep(2)">Next</button>
                                     </form>
@@ -503,6 +520,23 @@
                 <div class="module__header">
                     <h2>Analytics & Reporting</h2>
                     <p>Monitor campaign performance and track key metrics</p>
+                    <div class="template-filters" id="analyticsControls" style="margin-top: 12px;">
+                        <div class="filter-group">
+                            <label class="form-label" for="analyticsModeSelect">View Mode</label>
+                            <select class="form-control" id="analyticsModeSelect">
+                                <option value="campaign_summary">Campaign Summary</option>
+                                <option value="strategy_performance">Strategy Performance</option>
+                            </select>
+                        </div>
+                        <div class="filter-group" id="strategySelectWrapper" style="display: none;">
+                            <label class="form-label" for="strategySelect">Strategy</label>
+                            <select class="form-control" id="strategySelect"></select>
+                        </div>
+                    </div>
+                    <div id="strategyModeBadge" class="alert alert--info hidden" style="margin-top: 8px;">
+                        Viewing Strategy Performance
+                    </div>
+                    <div id="bestStrategyVersionHint" class="alert alert--info hidden" style="margin-top: 8px;"></div>
                 </div>
                 
                 <div class="metrics-grid">
