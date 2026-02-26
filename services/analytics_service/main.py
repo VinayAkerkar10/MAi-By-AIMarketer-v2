@@ -12,7 +12,16 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database import get_db, FeatureName, Campaign, CampaignMetric, LeadScrapeResult, EnrichmentRow
+from shared.database import (
+    get_db,
+    FeatureName,
+    Campaign,
+    CampaignMetric,
+    LeadScrapeResult,
+    EnrichmentRow,
+    Strategy,
+    StrategyVersion,
+)
 from shared.auth import get_current_user, require_feature
 
 app = FastAPI(
@@ -198,6 +207,118 @@ async def download_report(
         "report_type": report_type,
         "data": data,
         "generated_at": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/api/analytics/strategy/{strategy_id}", tags=["Analytics"])
+async def get_strategy_performance(
+    strategy_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.ANALYTICS)),
+    db: Session = Depends(get_db)
+):
+    """Get aggregated strategy performance overall and by strategy version."""
+    org_id = current_user["organization_id"]
+
+    strategy = (
+        db.query(Strategy)
+        .filter(
+            Strategy.id == strategy_id,
+            Strategy.organization_id == org_id,
+        )
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    overall = (
+        db.query(
+            func.coalesce(func.count(Campaign.id), 0).label("campaign_count"),
+            func.coalesce(func.sum(CampaignMetric.sent), 0).label("total_sent"),
+            func.coalesce(func.sum(CampaignMetric.opened), 0).label("total_opened"),
+            func.coalesce(func.sum(CampaignMetric.clicked), 0).label("total_clicked"),
+            func.coalesce(func.sum(CampaignMetric.converted), 0).label("total_converted"),
+            func.coalesce(func.avg(CampaignMetric.ctr), 0.0).label("avg_ctr"),
+            func.coalesce(func.avg(CampaignMetric.conversion_rate), 0.0).label("avg_conversion_rate"),
+            func.coalesce(func.avg(CampaignMetric.roi), 0.0).label("avg_roi"),
+        )
+        .outerjoin(
+            CampaignMetric,
+            and_(
+                CampaignMetric.campaign_id == Campaign.id,
+                CampaignMetric.organization_id == Campaign.organization_id,
+            ),
+        )
+        .filter(
+            Campaign.organization_id == org_id,
+            Campaign.strategy_id == strategy_id,
+        )
+        .one()
+    )
+
+    by_version_rows = (
+        db.query(
+            StrategyVersion.version_no.label("strategy_version_no"),
+            func.coalesce(func.count(Campaign.id), 0).label("campaign_count"),
+            func.coalesce(func.sum(CampaignMetric.sent), 0).label("total_sent"),
+            func.coalesce(func.sum(CampaignMetric.opened), 0).label("total_opened"),
+            func.coalesce(func.sum(CampaignMetric.clicked), 0).label("total_clicked"),
+            func.coalesce(func.sum(CampaignMetric.converted), 0).label("total_converted"),
+            func.coalesce(func.avg(CampaignMetric.ctr), 0.0).label("avg_ctr"),
+            func.coalesce(func.avg(CampaignMetric.conversion_rate), 0.0).label("avg_conversion_rate"),
+            func.coalesce(func.avg(CampaignMetric.roi), 0.0).label("avg_roi"),
+        )
+        .outerjoin(
+            Campaign,
+            and_(
+                Campaign.strategy_id == StrategyVersion.strategy_id,
+                Campaign.strategy_version_no == StrategyVersion.version_no,
+                Campaign.organization_id == StrategyVersion.organization_id,
+            ),
+        )
+        .outerjoin(
+            CampaignMetric,
+            and_(
+                CampaignMetric.campaign_id == Campaign.id,
+                CampaignMetric.organization_id == Campaign.organization_id,
+            ),
+        )
+        .filter(
+            StrategyVersion.organization_id == org_id,
+            StrategyVersion.strategy_id == strategy_id,
+        )
+        .group_by(StrategyVersion.version_no)
+        .order_by(StrategyVersion.version_no.asc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "overall": {
+            "campaign_count": int(overall.campaign_count or 0),
+            "total_sent": int(overall.total_sent or 0),
+            "total_opened": int(overall.total_opened or 0),
+            "total_clicked": int(overall.total_clicked or 0),
+            "total_converted": int(overall.total_converted or 0),
+            "avg_ctr": float(overall.avg_ctr or 0.0),
+            "avg_conversion_rate": float(overall.avg_conversion_rate or 0.0),
+            "avg_roi": float(overall.avg_roi or 0.0),
+        },
+        "by_version": [
+            {
+                "strategy_version_no": int(row.strategy_version_no),
+                "campaign_count": int(row.campaign_count or 0),
+                "total_sent": int(row.total_sent or 0),
+                "total_opened": int(row.total_opened or 0),
+                "total_clicked": int(row.total_clicked or 0),
+                "total_converted": int(row.total_converted or 0),
+                "avg_ctr": float(row.avg_ctr or 0.0),
+                "avg_conversion_rate": float(row.avg_conversion_rate or 0.0),
+                "avg_roi": float(row.avg_roi or 0.0),
+            }
+            for row in by_version_rows
+        ],
+        "generated_at": datetime.utcnow().isoformat(),
     }
 
 @app.get("/api/health", tags=["Health"])
