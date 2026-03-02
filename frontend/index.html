@@ -154,6 +154,19 @@
                                 <p>Please complete your Business Profile first to generate personalized strategies.</p>
                             </div>
                             <button class="btn btn--primary" id="generateStrategy" disabled>Generate AI Strategy</button>
+
+                            <div class="form-group" style="margin-top: 16px;">
+                                <label class="form-label" for="strategyHistorySelect">Strategy History</label>
+                                <select class="form-control" id="strategyHistorySelect" disabled>
+                                    <option value="">No saved strategies</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="strategyVersionSelect">Strategy Version</label>
+                                <select class="form-control" id="strategyVersionSelect" disabled>
+                                    <option value="">Select version</option>
+                                </select>
+                            </div>
                         </div>
                         
                         <div id="strategyLoading" class="hidden">

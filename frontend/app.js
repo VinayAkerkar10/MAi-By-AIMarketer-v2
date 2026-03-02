@@ -53,6 +53,8 @@ let selectedStrategyId = "";
 let strategyOptions = [];
 let strategyVersionMetrics = [];
 let performanceChartMode = "campaign_summary";
+let strategyHistoryOptions = [];
+let strategyHistoryRequestVersion = 0;
 let campaignStrategyOptions = [];
 let campaignStrategyVersionOptions = [];
 let strategyVersionRequestToken = 0;
@@ -590,6 +592,7 @@ function handleModuleSpecialInit(moduleId) {
     switch(moduleId) {
         case 'strategy-generator':
             updateStrategyGeneratorState();
+            loadStrategyHistoryOptions();
             break;
         case 'analytics':
             setTimeout(() => { loadAndRenderAnalytics(); }, 200);
@@ -637,6 +640,18 @@ function setupEventListeners() {
     const generateStrategyBtn = document.getElementById('generateStrategy');
     if (generateStrategyBtn) {
         generateStrategyBtn.addEventListener('click', generateAIStrategy);
+    }
+
+    const strategyHistorySelect = document.getElementById('strategyHistorySelect');
+    if (strategyHistorySelect && !strategyHistorySelect.dataset.bound) {
+        strategyHistorySelect.addEventListener('change', handleStrategyHistoryChange);
+        strategyHistorySelect.dataset.bound = '1';
+    }
+
+    const strategyVersionSelect = document.getElementById('strategyVersionSelect');
+    if (strategyVersionSelect && !strategyVersionSelect.dataset.bound) {
+        strategyVersionSelect.addEventListener('change', handleStrategyVersionChange);
+        strategyVersionSelect.dataset.bound = '1';
     }
 
     // Lead Scraper Form
@@ -797,6 +812,126 @@ function updateStrategyGeneratorState() {
     }
 }
 
+function resetStrategyVersionDropdown(message = 'Select version') {
+    const versionSelect = document.getElementById('strategyVersionSelect');
+    if (!versionSelect) return;
+    versionSelect.innerHTML = `<option value="">${message}</option>`;
+    versionSelect.disabled = true;
+}
+
+async function loadStrategyHistoryOptions() {
+    const historySelect = document.getElementById('strategyHistorySelect');
+    if (!historySelect) return;
+
+    const requestVersion = ++strategyHistoryRequestVersion;
+    historySelect.disabled = true;
+    historySelect.innerHTML = '<option value="">Loading strategies...</option>';
+    resetStrategyVersionDropdown();
+
+    try {
+        const response = await apiRequest('/api/strategy/history');
+        if (requestVersion !== strategyHistoryRequestVersion) return;
+
+        const strategies = Array.isArray(response?.strategies) ? response.strategies : [];
+        strategyHistoryOptions = strategies;
+
+        if (!strategies.length) {
+            historySelect.innerHTML = '<option value="">No saved strategies</option>';
+            historySelect.disabled = true;
+            return;
+        }
+
+        historySelect.innerHTML = '<option value="">Select strategy</option>';
+        strategies.forEach((item) => {
+            const strategyId = item?.strategy_id;
+            if (!strategyId) return;
+            const name = item?.business_name || strategyId;
+            const latestVersion = Number(item?.latest_version_no) || 0;
+            const option = document.createElement('option');
+            option.value = strategyId;
+            option.textContent = latestVersion > 0 ? `${name} (Latest V${latestVersion})` : name;
+            historySelect.appendChild(option);
+        });
+        historySelect.disabled = false;
+    } catch (error) {
+        if (requestVersion !== strategyHistoryRequestVersion) return;
+        console.error('Strategy history loading error:', error);
+        historySelect.innerHTML = '<option value="">Failed to load strategies</option>';
+        historySelect.disabled = true;
+        resetStrategyVersionDropdown('Select version');
+    }
+}
+
+async function handleStrategyHistoryChange(event) {
+    const strategyId = event?.target?.value || '';
+    const versionSelect = document.getElementById('strategyVersionSelect');
+    if (!versionSelect) return;
+
+    resetStrategyVersionDropdown('Loading versions...');
+    if (!strategyId) {
+        resetStrategyVersionDropdown();
+        return;
+    }
+
+    const requestVersion = ++strategyHistoryRequestVersion;
+
+    try {
+        const response = await apiRequest(`/api/strategy/${encodeURIComponent(strategyId)}/versions`);
+        if (requestVersion !== strategyHistoryRequestVersion) return;
+
+        const versions = Array.isArray(response?.versions) ? response.versions : [];
+        if (!versions.length) {
+            resetStrategyVersionDropdown('No versions available');
+            return;
+        }
+
+        versionSelect.innerHTML = '<option value="">Select version</option>';
+        versions.forEach((version) => {
+            const versionNo = Number(version?.version_no);
+            if (!Number.isFinite(versionNo)) return;
+            const option = document.createElement('option');
+            option.value = String(versionNo);
+            option.textContent = `Version ${versionNo}`;
+            versionSelect.appendChild(option);
+        });
+        versionSelect.disabled = false;
+    } catch (error) {
+        if (requestVersion !== strategyHistoryRequestVersion) return;
+        console.error('Strategy versions loading error:', error);
+        resetStrategyVersionDropdown('Failed to load versions');
+    }
+}
+
+async function handleStrategyVersionChange(event) {
+    const historySelect = document.getElementById('strategyHistorySelect');
+    const strategyId = historySelect?.value || '';
+    const versionNo = event?.target?.value || '';
+    if (!strategyId || !versionNo) return;
+
+    const loadingDiv = document.getElementById('strategyLoading');
+    const resultsDiv = document.getElementById('strategyResults');
+    if (loadingDiv) loadingDiv.classList.remove('hidden');
+
+    try {
+        const response = await apiRequest(`/api/strategy/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(versionNo)}`);
+        const strategyOutput = response?.strategy_output;
+        if (!strategyOutput || typeof strategyOutput !== 'object') {
+            throw new Error('Strategy version data is not available.');
+        }
+
+        appData.generatedStrategy = strategyOutput;
+        saveDataToStorage();
+        displayStrategyResults(strategyOutput);
+        if (resultsDiv) resultsDiv.classList.remove('hidden');
+        showSuccessMessage(`Loaded strategy version ${versionNo}.`);
+    } catch (error) {
+        console.error('Strategy version detail loading error:', error);
+        showErrorMessage(error.message || 'Failed to load strategy version.');
+    } finally {
+        if (loadingDiv) loadingDiv.classList.add('hidden');
+    }
+}
+
 async function generateAIStrategy() {
     console.log('Generating AI strategy...');
     
@@ -839,6 +974,7 @@ async function generateAIStrategy() {
 
         loadingDiv.classList.add('hidden');
         resultsDiv.classList.remove('hidden');
+        loadStrategyHistoryOptions();
         showSuccessMessage('AI strategy generated successfully!');
     } catch (error) {
         console.error('Strategy generation error:', error);
