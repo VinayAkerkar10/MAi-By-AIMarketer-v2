@@ -70,6 +70,25 @@ function getStoredToken() {
     return localStorage.getItem(TOKEN_STORAGE_KEY);
 }
 
+function updateLogoutButtonVisibility() {
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (!logoutBtn) return;
+    logoutBtn.classList.toggle('hidden', !getStoredToken());
+}
+
+async function handleLogout() {
+    try {
+        await apiRequest('/api/auth/logout', 'POST', {});
+    } catch (error) {
+        console.warn('Logout API failed, continuing with local cleanup:', error);
+    } finally {
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('organization_name');
+        localStorage.removeItem('user_id');
+        window.location.href = LOGIN_PAGE_PATH;
+    }
+}
+
 
 const DEFAULT_ANALYTICS_VIEW_MODEL = {
     totalLeads: 0,
@@ -703,6 +722,12 @@ function setupEventListeners() {
     if (exportDataBtn) {
         exportDataBtn.addEventListener('click', exportApplicationData);
     }
+
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', handleLogout);
+    }
+    updateLogoutButtonVisibility();
 
     // Modal close functionality
     document.addEventListener('click', function(e) {

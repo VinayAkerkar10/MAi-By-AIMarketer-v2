@@ -135,7 +135,8 @@ async def org_first_login(
         "sub": user.user_id,
         "org_id": org.id,
         "role": user.role.value,
-        "user_db_id": user.id
+        "user_db_id": user.id,
+        "sv": int(user.session_version or 0),
     }
     access_token = create_access_token(token_data)
     
@@ -183,6 +184,32 @@ async def get_current_user_info(
             "name": org.name,
             "status": org.status
         } if org else None
+    }
+
+@app.post("/api/auth/logout", tags=["Authentication"])
+async def logout(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Invalidate current JWT session by bumping session version"""
+    user = db.query(User).filter(
+        User.organization_id == current_user["organization_id"],
+        User.user_id == current_user["user_id"],
+        User.is_active == True
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive"
+        )
+
+    user.session_version = int(user.session_version or 0) + 1
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Logged out successfully"
     }
 
 # ===== ORGANIZATION MANAGEMENT (Admin Only) =====

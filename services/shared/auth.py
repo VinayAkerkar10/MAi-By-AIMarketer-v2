@@ -98,6 +98,7 @@ async def get_current_user(
     
     user_id: str = payload.get("sub")
     org_id: str = payload.get("org_id")
+    token_session_version = payload.get("sv")
     
     if not user_id or not org_id:
         raise HTTPException(
@@ -116,6 +117,21 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive"
+        )
+
+    try:
+        token_session_version_int = int(token_session_version if token_session_version is not None else 0)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload"
+        )
+
+    user_session_version_int = int(user.session_version or 0)
+    if token_session_version_int != user_session_version_int:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated"
         )
     
     # Update last login
