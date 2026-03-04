@@ -190,20 +190,3 @@ services:
         value: https://campaign-planner-service.onrender.com
       - key: ANALYTICS_SERVICE_URL
         value: https://analytics-service.onrender.com
-
-  - type: worker
-    name: celery-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    plan: free
-    autoDeploy: true
-    envVars:
-      - key: SERVICE_COMMAND
-        value: celery -A services.shared.celery_app worker --loglevel=info
-      - key: ENV
-        value: staging
-      - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
-        sync: false
