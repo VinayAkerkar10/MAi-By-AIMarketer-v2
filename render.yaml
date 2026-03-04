@@ -1,0 +1,209 @@
+services:
+  - type: web
+    name: auth-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.auth_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+
+  - type: web
+    name: licensing-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.licensing_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+
+  - type: web
+    name: strategy-ai-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.strategy_ai_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CONFIG_DIR
+        value: /opt/render/project/src/config
+      - key: LLM_PROVIDER
+        value: ollama_cloud
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com/api
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: kimi-k2:1t
+      - key: REQUEST_TIMEOUT
+        value: "60"
+      - key: STRATEGY_PROVIDER
+        value: auto
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4
+      - key: OPENAI_MAX_TOKENS
+        value: "2000"
+
+  - type: web
+    name: lead-enrichment-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.lead_enrichment_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+      - key: GITHUB_API_TOKEN
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: LINKEDIN_API_KEY
+        sync: false
+      - key: VOLZA_API_KEY
+        sync: false
+      - key: CLEARBIT_API_KEY
+        sync: false
+      - key: HUNTER_IO_API_KEY
+        sync: false
+      - key: OUTSCRAPER_API_KEY
+        sync: false
+
+  - type: web
+    name: campaign-planner-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.campaign_planner_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+      - key: LEAD_SERVICE_URL
+        value: https://lead-enrichment-service.onrender.com
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: FACEBOOK_ACCESS_TOKEN
+        sync: false
+      - key: LINKEDIN_ACCESS_TOKEN
+        sync: false
+      - key: TWITTER_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+
+  - type: web
+    name: analytics-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn services.analytics_service.main:app --host 0.0.0.0 --port $PORT
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_EXPIRE_MINUTES
+        value: "43200"
+
+  - type: web
+    name: api-gateway
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: SERVICE_COMMAND
+        value: uvicorn api_gateway.main:app --host 0.0.0.0 --port $PORT
+      - key: AUTH_SERVICE_URL
+        value: https://auth-service.onrender.com
+      - key: LICENSING_SERVICE_URL
+        value: https://licensing-service.onrender.com
+      - key: STRATEGY_SERVICE_URL
+        value: https://strategy-ai-service.onrender.com
+      - key: LEAD_SERVICE_URL
+        value: https://lead-enrichment-service.onrender.com
+      - key: CAMPAIGN_SERVICE_URL
+        value: https://campaign-planner-service.onrender.com
+      - key: ANALYTICS_SERVICE_URL
+        value: https://analytics-service.onrender.com
+
+  - type: worker
+    name: celery-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: SERVICE_COMMAND
+        value: celery -A services.shared.celery_app worker --loglevel=info
+      - key: ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false

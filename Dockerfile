@@ -16,6 +16,7 @@ RUN apt-get update \
         gcc \
         g++ \
         libpq-dev \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Chrome/Selenium omitted for early alignment phase (avoids apt-key deprecation and build failures).
@@ -38,7 +39,8 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || exit 1
+    CMD curl -f http://localhost:$PORT/api/health || exit 1
 
 # Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD sh -c "$SERVICE_COMMAND"
