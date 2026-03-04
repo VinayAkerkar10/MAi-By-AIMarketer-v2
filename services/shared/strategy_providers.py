@@ -3,10 +3,17 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
+import asyncio
 import os
+import random
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class LLMProviderError(Exception):
+    """Raised when provider configuration or upstream call fails."""
+    pass
 
 # ===== PROVIDER INTERFACE =====
 
@@ -43,8 +50,8 @@ class OllamaStrategyProvider(StrategyProvider):
     
     def __init__(self):
         self.base_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-        self.model = os.getenv("OLLAMA_STRATEGY_MODEL", "llama2")
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+        self.model = os.getenv("OLLAMA_STRATEGY_MODEL", os.getenv("MODEL_NAME", "llama2"))
+        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", os.getenv("REQUEST_TIMEOUT", "120")))
     
     def is_available(self) -> bool:
         """Check if Ollama is available"""
@@ -55,6 +62,18 @@ class OllamaStrategyProvider(StrategyProvider):
         except Exception as e:
             logger.warning(f"Ollama not available: {e}")
             return False
+
+    @staticmethod
+    def _snippet(value: Any, limit: int = 200) -> str:
+        text = str(value or "").replace("\n", " ").strip()
+        return text[:limit]
+
+    @staticmethod
+    def _extract_strategy_text(result: Dict[str, Any]) -> Any:
+        strategy_text = result.get("response", "")
+        if not strategy_text and isinstance(result.get("message"), dict):
+            strategy_text = result["message"].get("content", "")
+        return strategy_text
     
     async def generate_strategy(
         self,
@@ -125,9 +144,7 @@ class OllamaStrategyProvider(StrategyProvider):
                 )
                 
                 # Parse Ollama response (tolerate different response shapes)
-                strategy_text = result.get("response", "")
-                if not strategy_text and isinstance(result.get("message"), dict):
-                    strategy_text = result["message"].get("content", "")
+                strategy_text = self._extract_strategy_text(result)
                 if isinstance(strategy_text, dict):
                     strategy_text = json.dumps(strategy_text)
                 if isinstance(strategy_text, str) and strategy_text.startswith('"') and strategy_text.endswith('"'):
@@ -143,7 +160,63 @@ class OllamaStrategyProvider(StrategyProvider):
                     "[OLLAMA_DEBUG] Extracted strategy_text head(500)=%s",
                     (strategy_text or "")[:500]
                 )
-                return self._parse_strategy_response(strategy_text, business_profile)
+                logger.debug(
+                    "JSON_PARSE_STAGE=initial snippet=%s",
+                    self._snippet(strategy_text)
+                )
+                parsed_strategy = self._parse_strategy_response(
+                    strategy_text,
+                    business_profile,
+                    allow_fallback=False
+                )
+                if parsed_strategy:
+                    return parsed_strategy
+
+                retry_prompt = (
+                    f"{prompt}\n\n"
+                    "The previous response was not valid JSON.\n"
+                    "Return ONLY valid JSON. No text outside JSON."
+                )
+                logger.debug(
+                    "[OLLAMA_DEBUG] Retrying Ollama parse recovery: url=%s",
+                    f"{self.base_url}/api/generate"
+                )
+                retry_response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": retry_prompt,
+                        "format": "json",
+                        "stream": False,
+                        "options": {
+                            "num_predict": 1200,
+                            "temperature": 0.7,
+                            "top_p": 0.9
+                        }
+                    }
+                )
+                retry_response.raise_for_status()
+                retry_result = retry_response.json()
+                retry_text = self._extract_strategy_text(retry_result)
+                if isinstance(retry_text, dict):
+                    retry_text = json.dumps(retry_text)
+                logger.debug(
+                    "JSON_PARSE_STAGE=retry snippet=%s",
+                    self._snippet(retry_text)
+                )
+                retry_parsed = self._parse_strategy_response(
+                    retry_text,
+                    business_profile,
+                    allow_fallback=False
+                )
+                if retry_parsed:
+                    return retry_parsed
+
+                logger.warning(
+                    "JSON_PARSE_STAGE=fallback snippet=%s",
+                    self._snippet(retry_text or strategy_text)
+                )
+                return self._get_minimal_fallback_strategy(business_profile, reason="parse_failure")
                 
         except httpx.RequestError as e:
             logger.error(f"Ollama request error: {e}")
@@ -153,6 +226,152 @@ class OllamaStrategyProvider(StrategyProvider):
             logger.error(f"Ollama strategy generation error: {e}")
             logger.warning("Fallback trigger condition: generation_exception")
             return self._get_minimal_fallback_strategy(business_profile, reason="generation_exception")
+
+
+class OllamaCloudStrategyProvider(OllamaStrategyProvider):
+    """Official Ollama cloud API provider."""
+
+    TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
+
+    def __init__(self):
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/api").rstrip("/")
+        self.api_key = os.getenv("OLLAMA_API_KEY", "")
+        self.model = os.getenv("MODEL_NAME", os.getenv("OLLAMA_STRATEGY_MODEL", "gpt-oss:120b"))
+        self.timeout = int(os.getenv("REQUEST_TIMEOUT", os.getenv("OLLAMA_TIMEOUT", "60")))
+        self.max_retries = 3
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def _generate_endpoint(self) -> str:
+        return f"{self.base_url}/generate" if self.base_url.endswith("/api") else f"{self.base_url}/api/generate"
+
+    async def _request_with_retry(self, prompt: str) -> Dict[str, Any]:
+        import httpx
+
+        if not self.api_key:
+            raise LLMProviderError("OLLAMA_API_KEY is required for ollama_cloud provider")
+        if self.timeout <= 0:
+            raise LLMProviderError("REQUEST_TIMEOUT must be greater than 0")
+
+        url = self._generate_endpoint()
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "format": "json",
+            "stream": False,
+            "options": {
+                "num_predict": 1200,
+                "temperature": 0.7,
+                "top_p": 0.9
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(self.timeout))) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = await client.post(url, json=payload, headers=headers)
+                except (httpx.RequestError, httpx.TimeoutException) as exc:
+                    logger.warning(
+                        "Ollama cloud request attempt failed",
+                        extra={"provider": "ollama_cloud", "attempt": attempt, "error_type": type(exc).__name__}
+                    )
+                    if attempt < self.max_retries:
+                        backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise LLMProviderError("Ollama cloud request failed") from exc
+
+                if response.status_code in self.TRANSIENT_STATUS_CODES and attempt < self.max_retries:
+                    backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
+                    await asyncio.sleep(backoff)
+                    continue
+
+                if response.status_code >= 400:
+                    error_message = None
+                    try:
+                        error_body = response.json()
+                        error_message = error_body.get("error") if isinstance(error_body, dict) else None
+                    except Exception:
+                        error_message = response.text
+                    raise LLMProviderError(
+                        f"Ollama cloud error ({response.status_code}): {(error_message or 'unknown error')[:300]}"
+                    )
+
+                try:
+                    return response.json()
+                except Exception as exc:
+                    raise LLMProviderError("Invalid JSON response from Ollama cloud") from exc
+
+        raise LLMProviderError("Ollama cloud request failed after retries")
+
+    async def generate_strategy(
+        self,
+        business_profile: Dict[str, Any],
+        additional_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        import json
+
+        prompt = self._build_strategy_prompt(business_profile, additional_context)
+        logger.info(
+            "Using Ollama cloud provider for strategy generation",
+            extra={"provider": "ollama_cloud", "model": self.model, "base_url": self.base_url}
+        )
+        try:
+            result = await self._request_with_retry(prompt)
+            strategy_text = self._extract_strategy_text(result)
+            if isinstance(strategy_text, dict):
+                strategy_text = json.dumps(strategy_text)
+            logger.debug(
+                "JSON_PARSE_STAGE=initial snippet=%s",
+                self._snippet(strategy_text)
+            )
+            parsed = self._parse_strategy_response(
+                strategy_text,
+                business_profile,
+                allow_fallback=False
+            )
+            if parsed:
+                parsed["provider"] = "ollama_cloud"
+                parsed["model"] = self.model
+                return parsed
+
+            retry_prompt = (
+                f"{prompt}\n\n"
+                "The previous response was not valid JSON.\n"
+                "Return ONLY valid JSON. No text outside JSON."
+            )
+            retry_result = await self._request_with_retry(retry_prompt)
+            retry_text = self._extract_strategy_text(retry_result)
+            if isinstance(retry_text, dict):
+                retry_text = json.dumps(retry_text)
+            logger.debug(
+                "JSON_PARSE_STAGE=retry snippet=%s",
+                self._snippet(retry_text)
+            )
+            retry_parsed = self._parse_strategy_response(
+                retry_text,
+                business_profile,
+                allow_fallback=False
+            )
+            if retry_parsed:
+                retry_parsed["provider"] = "ollama_cloud"
+                retry_parsed["model"] = self.model
+                return retry_parsed
+
+            logger.warning(
+                "JSON_PARSE_STAGE=fallback snippet=%s",
+                self._snippet(retry_text or strategy_text)
+            )
+            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_parse_failure")
+        except LLMProviderError as exc:
+            logger.error("Ollama cloud strategy generation failed: %s", str(exc))
+            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_request_error")
     
     def _build_strategy_prompt(
         self,
@@ -162,8 +381,44 @@ class OllamaStrategyProvider(StrategyProvider):
         """Build prompt for strategy generation"""
         budget_range = business_profile.get('budget_range', 'Not specified')
         marketing_goals = ', '.join(business_profile.get('marketing_goals', []))
-        
-        prompt = f"""You are an expert B2B digital marketing strategy consultant with deep industry knowledge. Generate a comprehensive, data-driven marketing strategy based on the business profile provided.
+
+        system_prompt = """You are a marketing strategy generator.
+
+You MUST respond ONLY with valid JSON.
+Do NOT include explanations.
+Do NOT include markdown.
+Do NOT include text outside JSON.
+
+Return JSON with the following schema:
+
+{
+  "recommended_channels": [string],
+  "target_audience_segments": [string],
+  "campaign_timeline": {
+    "phase_1": {
+      "name": string,
+      "duration": string,
+      "description": string,
+      "actions": [string]
+    },
+    "phase_2": {
+      "name": string,
+      "duration": string,
+      "description": string,
+      "actions": [string]
+    },
+    "phase_3": {
+      "name": string,
+      "duration": string,
+      "description": string,
+      "actions": [string]
+    }
+  }
+}
+
+"""
+
+        prompt = system_prompt + f"""You are an expert B2B digital marketing strategy consultant with deep industry knowledge. Generate a comprehensive, data-driven marketing strategy based on the business profile provided.
 
 BUSINESS PROFILE:
 - Company Name: {business_profile.get('business_name', 'N/A')}
@@ -267,63 +522,82 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
     def _parse_strategy_response(
         self,
         response_text: str,
-        business_profile: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        business_profile: Dict[str, Any],
+        allow_fallback: bool = True
+    ) -> Optional[Dict[str, Any]]:
         """Parse Ollama response into strategy format"""
         import json
         import re
         from json import JSONDecoder
-        
+
+        def _snippet(value: str) -> str:
+            value = (value or "").replace("\n", " ").strip()
+            return value[:200]
+
+        def _cleanup_and_load(raw_text: str) -> Optional[Dict[str, Any]]:
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                logger.debug("[JSON_PARSE_DEBUG] stage=cleanup_extract status=no_object snippet=%s", _snippet(raw_text))
+                return None
+            candidate = raw_text[start:end + 1]
+            logger.debug("[JSON_PARSE_DEBUG] stage=cleanup_extract status=attempt snippet=%s", _snippet(candidate))
+            try:
+                obj = json.loads(candidate)
+                return obj if isinstance(obj, dict) else None
+            except json.JSONDecodeError:
+                logger.debug("[JSON_PARSE_DEBUG] stage=cleanup_extract status=decode_failed snippet=%s", _snippet(candidate))
+                return None
+
         def _extract_json(text: str) -> Optional[Dict[str, Any]]:
             required_keys = {"recommended_channels"}
             text = text.strip()
             if not text:
+                logger.debug("[JSON_PARSE_DEBUG] stage=initial_load status=empty")
                 return None
 
-            # Strip Markdown code fences if present
+            # Parse attempt 1: direct JSON parse
+            logger.debug("[JSON_PARSE_DEBUG] stage=initial_load status=attempt snippet=%s", _snippet(text))
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and required_keys.issubset(parsed.keys()):
+                    return parsed
+                if isinstance(parsed, dict):
+                    logger.debug(
+                        "[JSON_PARSE_DEBUG] stage=initial_load status=missing_keys missing=%s",
+                        list(required_keys.difference(parsed.keys()))
+                    )
+            except json.JSONDecodeError:
+                logger.debug("[JSON_PARSE_DEBUG] stage=initial_load status=decode_failed snippet=%s", _snippet(text))
+
+            # Parse attempt 2: fenced JSON block
             fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
             if fence_match:
+                fenced = fence_match.group(1)
+                logger.debug("[JSON_PARSE_DEBUG] stage=fenced_extract status=attempt snippet=%s", _snippet(fenced))
                 try:
-                    obj = json.loads(fence_match.group(1))
+                    obj = json.loads(fenced)
                     if isinstance(obj, dict) and required_keys.issubset(obj.keys()):
                         return obj
-                    if isinstance(obj, dict):
-                        missing = list(required_keys.difference(obj.keys()))
-                        logger.error(
-                            "[JSON_PARSE_DEBUG] Missing required keys in fenced JSON: %s",
-                            missing
-                        )
                 except json.JSONDecodeError:
-                    logger.error("[JSON_PARSE_DEBUG] json_decode_error in fenced JSON")
-                    pass
-            else:
-                logger.debug("[JSON_PARSE_DEBUG] No JSON code fence found")
+                    logger.debug("[JSON_PARSE_DEBUG] stage=fenced_extract status=decode_failed snippet=%s", _snippet(fenced))
 
-            # Try to decode from first JSON object in the text
+            # Parse attempt 3: cleanup parse from first '{' to last '}'
+            cleaned = _cleanup_and_load(text)
+            if isinstance(cleaned, dict) and required_keys.issubset(cleaned.keys()):
+                return cleaned
+
+            # Last tolerant pass using decoder scan
             decoder = JSONDecoder()
             for idx, ch in enumerate(text):
-                if ch == "{":
-                    try:
-                        obj, _ = decoder.raw_decode(text[idx:])
-                        if isinstance(obj, dict) and required_keys.issubset(obj.keys()):
-                            return obj
-                        if isinstance(obj, dict):
-                            missing = list(required_keys.difference(obj.keys()))
-                            logger.error(
-                                "[JSON_PARSE_DEBUG] Missing required keys in decoded JSON: %s",
-                                missing
-                            )
-                    except json.JSONDecodeError:
-                        # Log failure location and surrounding text
-                        fail_start = max(idx - 150, 0)
-                        fail_end = min(idx + 150, len(text))
-                        snippet = text[fail_start:fail_end]
-                        logger.error(
-                            "[JSON_PARSE_DEBUG] json_decode_error at index=%d snippet=%s",
-                            idx,
-                            snippet
-                        )
-                        continue
+                if ch != "{":
+                    continue
+                try:
+                    obj, _ = decoder.raw_decode(text[idx:])
+                    if isinstance(obj, dict) and required_keys.issubset(obj.keys()):
+                        return obj
+                except json.JSONDecodeError:
+                    continue
             return None
 
         strategy_data = _extract_json(response_text)
@@ -354,13 +628,11 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
                         budget_allocation[key] = round((budget_allocation[key] / total) * 100, 2)
             
             return parsed_strategy
-        else:
-            logger.error("Failed to extract JSON from Ollama response")
-        
-        # If parsing fails, try to get AI to fix it or use minimal fallback
-        logger.warning("Failed to parse AI response, using minimal fallback")
-        logger.warning("Fallback trigger condition: parse_failure")
-        return self._get_minimal_fallback_strategy(business_profile, reason="parse_failure")
+        logger.error("Failed to extract JSON from Ollama response")
+        if allow_fallback:
+            logger.warning("Fallback trigger condition: parse_failure")
+            return self._get_minimal_fallback_strategy(business_profile, reason="parse_failure")
+        return None
     
     def _get_minimal_fallback_strategy(
         self,
@@ -620,9 +892,16 @@ class StrategyProviderFactory:
         4. Fallback to config-based
         """
         if provider_type is None:
-            provider_type = os.getenv("STRATEGY_PROVIDER", "auto")
+            provider_type = os.getenv("LLM_PROVIDER", os.getenv("STRATEGY_PROVIDER", "auto"))
         
         provider_type = provider_type.lower()
+
+        if provider_type == "ollama_cloud":
+            cloud_provider = OllamaCloudStrategyProvider()
+            if cloud_provider.is_available():
+                logger.info("Using Ollama cloud strategy provider")
+                return cloud_provider
+            raise LLMProviderError("Ollama cloud provider selected but API key is missing")
         
         if provider_type == "ollama" or provider_type == "auto":
             ollama_provider = OllamaStrategyProvider()
@@ -650,6 +929,20 @@ class StrategyProviderFactory:
         # Last resort: return Ollama (will use fallback strategy)
         logger.warning("No AI provider available, using Ollama with fallback")
         return OllamaStrategyProvider()
+
+    @staticmethod
+    def validate_environment() -> str:
+        provider_type = os.getenv("LLM_PROVIDER", os.getenv("STRATEGY_PROVIDER", "auto")).lower()
+        timeout = int(os.getenv("REQUEST_TIMEOUT", os.getenv("OLLAMA_TIMEOUT", "120")))
+        if timeout <= 0:
+            raise LLMProviderError("REQUEST_TIMEOUT must be greater than 0")
+        if provider_type == "ollama_cloud":
+            if not os.getenv("OLLAMA_API_KEY"):
+                raise LLMProviderError("OLLAMA_API_KEY is required when LLM_PROVIDER=ollama_cloud")
+            base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/api")
+            if not base_url.startswith("https://"):
+                raise LLMProviderError("OLLAMA_BASE_URL must use https in ollama_cloud mode")
+        return provider_type
     
     @staticmethod
     def get_available_providers() -> List[str]:

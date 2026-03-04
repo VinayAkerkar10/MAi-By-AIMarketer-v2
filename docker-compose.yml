@@ -102,6 +102,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    profiles:
+      - local-llm
     # Note: After starting, pull a model with: docker exec -it ollama ollama pull llama2
 
   # StrategyAI Service
@@ -118,7 +120,11 @@ services:
       - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
       - STRATEGY_PROVIDER=${STRATEGY_PROVIDER:-auto}
+      - LLM_PROVIDER=${LLM_PROVIDER:-local}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      - MODEL_NAME=${MODEL_NAME:-kimi-k2:1t}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-60}
       - OLLAMA_STRATEGY_MODEL=${OLLAMA_STRATEGY_MODEL:-llama2}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-120}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -129,8 +135,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - .:/app
     networks:

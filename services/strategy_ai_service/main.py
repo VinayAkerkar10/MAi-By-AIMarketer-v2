@@ -10,6 +10,7 @@ import uuid
 import sys
 import os
 import logging
+import time
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 logger = logging.getLogger(__name__)
@@ -20,11 +21,18 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from shared.database import get_db, Strategy, StrategyVersion
 from shared.auth import get_current_user, require_feature, FeatureName
-from shared.strategy_providers import StrategyProviderFactory
+from shared.strategy_providers import StrategyProviderFactory, LLMProviderError
 from shared.config import (
     load_channel_config, load_budget_config, load_segments_config,
     load_content_strategy_config, load_kpi_config, load_timeline_config
 )
+
+if os.getenv("ENV", "development").lower() in {"development", "dev", "local"}:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except Exception:
+        pass
 
 app = FastAPI(
     title="MAi StrategyAI Service",
@@ -56,6 +64,10 @@ class BusinessProfile(BaseModel):
 class StrategyRequest(BaseModel):
     business_profile: BusinessProfile
     additional_context: Optional[str] = None
+
+
+class LLMTestRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=4000, description="Prompt text for provider connectivity test")
 
 # ===== STRATEGY GENERATION =====
 
@@ -223,6 +235,42 @@ async def generate_marketing_strategy(
             detail=f"Failed to generate marketing strategy: {str(e)}"
         )
 
+
+@app.post("/llm/test", tags=["Strategy"])
+async def llm_test(
+    request: LLMTestRequest,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
+):
+    started_at = time.perf_counter()
+    try:
+        provider = StrategyProviderFactory.create_provider()
+        test_profile = {
+            "business_name": "LLM Connectivity Test",
+            "industry": "Technology",
+            "company_size": "1-10",
+            "revenue": None,
+            "geography": "Global",
+            "marketing_goals": ["Validation"],
+            "budget_range": "N/A",
+            "target_audience": "N/A",
+            "website_link": "https://example.com"
+        }
+        result = await provider.generate_strategy(
+            business_profile=test_profile,
+            additional_context=request.prompt
+        )
+        latency_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        return {
+            "provider": result.get("provider", "unknown"),
+            "model": result.get("model", "unknown"),
+            "text_preview": (result.get("insights", "") or "")[:250],
+            "latency_ms": latency_ms
+        }
+    except LLMProviderError as e:
+        raise HTTPException(status_code=502, detail=f"LLM provider error: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="LLM test failed")
+
 @app.get("/api/strategy/providers", tags=["Strategy"])
 async def get_available_providers(
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
@@ -388,6 +436,20 @@ async def health_check():
         "service": "strategy_ai_service",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.on_event("startup")
+async def validate_provider_configuration():
+    provider_mode = StrategyProviderFactory.validate_environment()
+    provider = StrategyProviderFactory.create_provider(provider_mode)
+    app.state.strategy_provider = provider
+    logger.info("Strategy provider mode active: %s", provider_mode)
+    if provider_mode == "ollama_cloud":
+        base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/api")
+        if not base_url.startswith("https://"):
+            raise RuntimeError("OLLAMA_BASE_URL must use https in ollama_cloud mode")
+        if os.getenv("ENV", "").lower() in {"development", "dev", "debug"} or os.getenv("LOG_LEVEL", "").upper() == "DEBUG":
+            logger.warning("Ollama cloud provider is running in DEBUG mode")
 
 @app.get("/health", tags=["Health"])
 async def basic_health_check():

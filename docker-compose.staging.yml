@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  strategy_ai_service:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - LLM_PROVIDER=ollama_cloud
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://ollama.com/api}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      - MODEL_NAME=${MODEL_NAME:-kimi-k2:1t}
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-60}
