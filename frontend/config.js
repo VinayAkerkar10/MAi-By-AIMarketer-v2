@@ -4,7 +4,7 @@
     const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
     const isNonGatewayLocalPort = isLocalHost && window.location.port && window.location.port !== '8000';
 
-    let baseUrl = 'https://api-gateway-lug2.onrender.com';
+    let baseUrl = 'https://api-gateway-1ug2.onrender.com';
 
     if (isFileProtocol || isNonGatewayLocalPort) {
         baseUrl = 'http://localhost:8000';
