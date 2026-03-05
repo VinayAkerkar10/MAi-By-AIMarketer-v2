@@ -2,10 +2,11 @@
 # Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import RedirectResponse, Response, JSONResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
+import re
 
 app = FastAPI(
     title="MAi API Gateway",
@@ -39,6 +40,30 @@ SERVICE_ALIASES = {
     "admin": "auth",
 }
 
+ALLOWED_ORIGINS = {
+    "http://localhost:3000",
+    "http://localhost:8000",
+}
+VERCEL_ORIGIN_REGEX = re.compile(r"^https://.*\.vercel\.app$")
+
+
+def _resolve_cors_origin(request: Request) -> str:
+    origin = request.headers.get("origin", "")
+    if origin in ALLOWED_ORIGINS or VERCEL_ORIGIN_REGEX.match(origin):
+        return origin
+    # Safe default for explicit frontend deployment.
+    return "https://mai-by-ai-marketer-v2.vercel.app"
+
+
+def _cors_headers(request: Request) -> dict:
+    return {
+        "Access-Control-Allow-Origin": _resolve_cors_origin(request),
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Vary": "Origin",
+    }
+
 @app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_request(service: str, request: Request, path: str = ""):
@@ -58,6 +83,9 @@ async def proxy_request(service: str, request: Request, path: str = ""):
         url = f"{service_url}/api/{resolved_service}/{path}"
     else:
         url = f"{service_url}/api/{resolved_service}"
+
+    if request.method == "OPTIONS":
+        return Response(status_code=200, headers=_cors_headers(request))
 
     # Forward headers
     headers = dict(request.headers)
@@ -106,20 +134,17 @@ async def proxy_request(service: str, request: Request, path: str = ""):
     print(f"[Gateway Upstream] status={response.status_code}")
     print(f"[Gateway Upstream] body={response.text[:500]}")
 
-    # Forward status code and body; support both JSON and non-JSON responses
-    status_code = response.status_code
-    content_type = response.headers.get("content-type", "")
+    # Forward status/body and preserve upstream headers while ensuring CORS headers are present.
+    response_headers = dict(response.headers)
+    for hop_by_hop_header in ["content-length", "transfer-encoding", "connection", "keep-alive"]:
+        response_headers.pop(hop_by_hop_header, None)
+    response_headers.update(_cors_headers(request))
 
-    if "application/json" in content_type:
-        try:
-            content = response.json()
-            return JSONResponse(content=content, status_code=status_code)
-        except Exception:
-            pass  # fall through to raw content
     return Response(
         content=response.content,
-        status_code=status_code,
-        media_type=content_type or "application/octet-stream",
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/octet-stream"),
+        headers=response_headers,
     )
 
 @app.get("/health")
