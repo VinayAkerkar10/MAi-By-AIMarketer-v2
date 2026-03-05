@@ -38,6 +38,7 @@ SERVICE_URLS = {
 
 SERVICE_ALIASES = {
     "admin": "auth",
+    "enrichment": "leads",
 }
 
 ALLOWED_ORIGINS = {
@@ -69,20 +70,18 @@ def _cors_headers(request: Request) -> dict:
 async def proxy_request(service: str, request: Request, path: str = ""):
     """Proxy requests to appropriate microservice. Path is preserved so that
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
-    resolved_service = SERVICE_ALIASES.get(service, service)
+    upstream_service = SERVICE_ALIASES.get(service, service)
 
-    if resolved_service == "enrichment":
-        service_url = SERVICE_URLS["leads"]
-    elif resolved_service in SERVICE_URLS:
-        service_url = SERVICE_URLS[resolved_service]
+    if upstream_service in SERVICE_URLS:
+        service_url = SERVICE_URLS[upstream_service]
     else:
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
 
     # Preserve route shape without forcing a trailing slash when path is empty
     if path:
-        url = f"{service_url}/api/{resolved_service}/{path}"
+        url = f"{service_url}/api/{upstream_service}/{path}"
     else:
-        url = f"{service_url}/api/{resolved_service}"
+        url = f"{service_url}/api/{upstream_service}"
 
     if request.method == "OPTIONS":
         return Response(status_code=200, headers=_cors_headers(request))
@@ -101,7 +100,7 @@ async def proxy_request(service: str, request: Request, path: str = ""):
 
     # Inter-service routing diagnostics
     print(f"[Gateway Routing] service={service}")
-    print(f"[Gateway Routing] resolved_service={resolved_service}")
+    print(f"[Gateway Routing] resolved_service={upstream_service}")
     print(f"[Gateway Routing] service_url={service_url}")
     print(f"[Gateway Routing] upstream_url={url}")
 
