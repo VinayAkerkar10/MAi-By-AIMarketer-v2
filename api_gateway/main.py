@@ -16,10 +16,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://mai-by-ai-marketer-v2.vercel.app",
         "http://localhost:3000",
         "http://localhost:8000",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,8 +39,8 @@ SERVICE_ALIASES = {
     "admin": "auth",
 }
 
-@app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+@app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_request(service: str, request: Request, path: str = ""):
     """Proxy requests to appropriate microservice. Path is preserved so that
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
