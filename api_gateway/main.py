@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
 import re
+import asyncio
 
 app = FastAPI(
     title="MAi API Gateway",
@@ -68,6 +69,23 @@ def _cors_headers(request: Request) -> dict:
         "Vary": "Origin",
     }
 
+
+async def keep_services_warm():
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for name, service_url in SERVICE_URLS.items():
+                    health_url = f"{service_url}/api/health"
+                    try:
+                        r = await client.get(health_url)
+                        print(f"[Gateway Warmup] {name} -> {r.status_code}")
+                    except Exception as e:
+                        print(f"[Gateway Warmup Error] {name}: {e}")
+        except Exception as e:
+            print(f"[Gateway Warmup Loop Error] {e}")
+
+        await asyncio.sleep(300)
+
 @app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_request(service: str, request: Request, path: str = ""):
@@ -124,17 +142,25 @@ async def proxy_request(service: str, request: Request, path: str = ""):
         pool=None
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            response = await client.request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                content=body,
-                params=dict(request.query_params),
-            )
-        except httpx.RequestError as e:
-            print(f"[Gateway Error] {str(e)}")
-            raise HTTPException(status_code=503, detail="Upstream service unreachable")
+        max_retries = 3
+        retry_delay = 2
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.request(
+                    method=request.method,
+                    url=url,
+                    headers=headers,
+                    content=body,
+                    params=dict(request.query_params),
+                )
+                break
+            except httpx.RequestError as e:
+                print(f"[Gateway Retry] attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    print(f"[Gateway Error] {str(e)}")
+                    raise HTTPException(status_code=503, detail="Upstream service unreachable")
+                await asyncio.sleep(retry_delay)
 
     # Upstream diagnostics
     print(f"[Gateway Upstream] status={response.status_code}")
@@ -162,6 +188,11 @@ async def health_check():
         "services": list(SERVICE_URLS.keys())
     }
 
+
+@app.on_event("startup")
+async def start_keepalive():
+    asyncio.create_task(keep_services_warm())
+
 @app.get("/")
 async def root():
     """Root endpoint - redirect to docs"""
@@ -170,5 +201,4 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
-
 
