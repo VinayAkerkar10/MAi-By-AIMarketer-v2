@@ -42,7 +42,6 @@ for name, url in SERVICE_URLS.items():
 
 SERVICE_ALIASES = {
     "admin": "auth",
-    "enrichment": "leads",
 }
 
 ALLOWED_ORIGINS = {
@@ -76,7 +75,9 @@ async def proxy_request(service: str, request: Request, path: str = ""):
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
     resolved_service = SERVICE_ALIASES.get(service, service)
 
-    if resolved_service in SERVICE_URLS:
+    if resolved_service == "enrichment":
+        service_url = SERVICE_URLS["leads"]
+    elif resolved_service in SERVICE_URLS:
         service_url = SERVICE_URLS[resolved_service]
     else:
         raise HTTPException(status_code=404, detail=f"Service '{service}' not found")
