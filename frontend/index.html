@@ -88,8 +88,22 @@
                                 </div>
                                 
                                 <div class="form-group">
-                                    <label class="form-label" for="geography">Geographic Markets</label>
-                                    <input type="text" class="form-control" id="geography" placeholder="e.g., North America, Europe">
+                                    <label class="form-label" for="continent">Continent</label>
+                                    <select class="form-control" id="continent" required>
+                                        <option value="">Select Continent</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label" for="country">Country (Optional)</label>
+                                    <select class="form-control" id="country">
+                                        <option value="">Select Country (Optional)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label" for="region">Region (Optional)</label>
+                                    <input type="text" class="form-control" id="region" placeholder="e.g., Southeast Asia">
                                 </div>
                                 
                                 <div class="form-group">
@@ -126,6 +140,7 @@
                                 </div>
                                 
                                 <button type="submit" class="btn btn--primary btn--full-width">Save Business Profile</button>
+                                <button type="button" class="btn btn--secondary btn--full-width mt-8 hidden" id="generateStrategyFromProfile">Generate Strategy</button>
                             </form>
                         </div>
                     </div>
@@ -199,6 +214,15 @@
                             <div class="strategy-section">
                                 <h3>Content Strategy</h3>
                                 <div id="contentStrategy"></div>
+                            </div>
+
+                            <div class="strategy-section" id="strategyExecutionSection">
+                                <h3>Next Step: Execution</h3>
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                    <button class="btn btn--primary" id="createCampaignFromStrategyBtn">Create Campaign From Strategy</button>
+                                    <button class="btn btn--secondary" id="generateLeadsFromStrategyBtn">Generate Leads</button>
+                                </div>
+                                <div id="strategyExecutionStatus" style="margin-top: 10px;"></div>
                             </div>
                             
                             <button class="btn btn--secondary mt-8" id="exportStrategy">Export Strategy as PDF</button>

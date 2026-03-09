@@ -81,6 +81,13 @@ class LeadSource(str, enum.Enum):
     LINKEDIN = "linkedin"
     VOLZA = "volza"
 
+
+class ContinentMaster(Base):
+    __tablename__ = "continent_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+
 # ===== DATABASE MODELS =====
 
 class Organization(Base):

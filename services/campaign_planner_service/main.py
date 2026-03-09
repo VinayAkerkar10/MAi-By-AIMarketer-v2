@@ -61,6 +61,10 @@ class CampaignUpdateRequest(BaseModel):
     strategy_version_no: Optional[int] = None
 
 
+class StrategyCampaignRequest(BaseModel):
+    strategy_id: str = Field(..., description="Source strategy ID")
+
+
 def _validate_strategy_link(
     db: Session,
     organization_id: str,
@@ -439,6 +443,144 @@ async def execute_campaign(
 
 
 # ===== CAMPAIGN MANAGEMENT =====
+
+def _get_strategy_context_for_campaign(
+    db: Session,
+    organization_id: str,
+    strategy_id: str,
+) -> Dict[str, Any]:
+    strategy = (
+        db.query(Strategy)
+        .filter(
+            Strategy.id == strategy_id,
+            Strategy.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    version = (
+        db.query(StrategyVersion)
+        .filter(
+            StrategyVersion.strategy_id == strategy_id,
+            StrategyVersion.organization_id == organization_id,
+            StrategyVersion.is_current == True,  # noqa: E712
+        )
+        .order_by(StrategyVersion.version_no.desc())
+        .first()
+    )
+    if not version:
+        version = (
+            db.query(StrategyVersion)
+            .filter(
+                StrategyVersion.strategy_id == strategy_id,
+                StrategyVersion.organization_id == organization_id,
+            )
+            .order_by(StrategyVersion.version_no.desc())
+            .first()
+        )
+    if not version:
+        raise HTTPException(status_code=404, detail="Strategy version not found")
+
+    business_profile = version.business_profile_json if isinstance(version.business_profile_json, dict) else {}
+    strategy_output = version.strategy_output_json if isinstance(version.strategy_output_json, dict) else {}
+    return {
+        "strategy": strategy,
+        "version_no": int(version.version_no),
+        "business_profile": business_profile,
+        "strategy_output": strategy_output,
+    }
+
+
+@app.post("/api/campaigns/from-strategy", tags=["Campaigns"])
+async def create_campaign_from_strategy(
+    payload: StrategyCampaignRequest,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    strategy_id = str(payload.strategy_id or "").strip()
+    if not strategy_id:
+        raise HTTPException(status_code=422, detail="strategy_id is required")
+
+    context = _get_strategy_context_for_campaign(
+        db=db,
+        organization_id=current_user["organization_id"],
+        strategy_id=strategy_id,
+    )
+
+    strategy = context["strategy"]
+    version_no = context["version_no"]
+    business_profile = context["business_profile"]
+    strategy_output = context["strategy_output"]
+
+    channels_raw = strategy_output.get("recommended_channels")
+    channels = []
+    if isinstance(channels_raw, list):
+        channels = [str(item).strip() for item in channels_raw if str(item).strip()]
+    if not channels:
+        channels = ["Email", "LinkedIn"]
+
+    target_audience = _coerce_string(business_profile.get("target_audience"), "")
+    if not target_audience:
+        segments = strategy_output.get("target_segments")
+        if isinstance(segments, list) and segments:
+            target_audience = ", ".join([str(item).strip() for item in segments if str(item).strip()])
+    if not target_audience:
+        target_audience = "General B2B audience"
+
+    campaign_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    campaign_name = f"{strategy.business_name} AI Strategy Campaign"
+
+    try:
+        db_campaign = Campaign(
+            id=campaign_id,
+            organization_id=current_user["organization_id"],
+            strategy_id=strategy.id,
+            strategy_version_no=version_no,
+            campaign_name=campaign_name,
+            channels=channels,
+            target_audience=target_audience,
+            content=None,
+            schedule_date=None,
+            budget=None,
+            audience_source="scraped_leads",
+            manual_selection=[],
+            status="draft",
+            created_at=now,
+            updated_at=now,
+            deployed_at=None,
+        )
+        db.add(db_campaign)
+
+        db_metric = CampaignMetric(
+            campaign_id=campaign_id,
+            organization_id=current_user["organization_id"],
+            sent=0,
+            opened=0,
+            clicked=0,
+            converted=0,
+            impressions=0,
+            cost=0.0,
+            ctr=0.0,
+            conversion_rate=0.0,
+            cpa=0.0,
+            roi=0.0,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(db_metric)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create campaign from strategy: {str(exc)}")
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "message": "Campaign created from strategy",
+    }
 
 @app.post("/api/campaigns/create", tags=["Campaigns"])
 async def create_campaign(

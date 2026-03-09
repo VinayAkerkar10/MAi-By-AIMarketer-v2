@@ -28,6 +28,8 @@ from shared.database import (
     EnrichmentRow,
     TaskStatus,
     LeadSource,
+    Strategy,
+    StrategyVersion,
 )
 from shared.auth import get_current_user, require_feature
 from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
@@ -57,6 +59,10 @@ class LeadScrapingRequest(BaseModel):
     radius: Optional[int] = Field(10, description="Search radius in kilometers")
     max_results: Optional[int] = Field(100, description="Maximum number of results")
     sources: Optional[List[str]] = Field(None, description="Lead sources to query")
+
+
+class StrategyLeadRequest(BaseModel):
+    strategy_id: str = Field(..., description="Source strategy ID")
 
 # ===== LEAD SCRAPING =====
 
@@ -352,6 +358,112 @@ async def _scrape_github_leads(request: LeadScrapingRequest) -> Tuple[str, List[
             return "success", leads, ""
     except Exception as e:
         return "error", [], f"GitHub scraping failed: {str(e)}"
+
+
+def _build_location_from_profile(profile: Dict[str, Any]) -> str:
+    region = str(profile.get("region") or "").strip()
+    country = str(profile.get("country") or "").strip()
+    continent = str(profile.get("continent") or "").strip()
+    parts = [part for part in [region, country, continent] if part]
+    return ", ".join(parts) if parts else "Global"
+
+
+@app.post("/api/leads/from-strategy", tags=["Lead Generation"])
+async def start_lead_scraping_from_strategy(
+    payload: StrategyLeadRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+    db: Session = Depends(get_db),
+):
+    strategy_id = str(payload.strategy_id or "").strip()
+    if not strategy_id:
+        raise HTTPException(status_code=422, detail="strategy_id is required")
+
+    strategy = (
+        db.query(Strategy)
+        .filter(
+            Strategy.id == strategy_id,
+            Strategy.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    version = (
+        db.query(StrategyVersion)
+        .filter(
+            StrategyVersion.strategy_id == strategy_id,
+            StrategyVersion.organization_id == current_user["organization_id"],
+            StrategyVersion.is_current == True,  # noqa: E712
+        )
+        .order_by(StrategyVersion.version_no.desc())
+        .first()
+    )
+    if not version:
+        version = (
+            db.query(StrategyVersion)
+            .filter(
+                StrategyVersion.strategy_id == strategy_id,
+                StrategyVersion.organization_id == current_user["organization_id"],
+            )
+            .order_by(StrategyVersion.version_no.desc())
+            .first()
+        )
+    if not version:
+        raise HTTPException(status_code=404, detail="Strategy version not found")
+
+    business_profile = version.business_profile_json if isinstance(version.business_profile_json, dict) else {}
+    industry = str(business_profile.get("industry") or strategy.industry or "").strip() or "B2B Services"
+    location = _build_location_from_profile(business_profile)
+    selected_sources = ["github"]
+
+    request_model = LeadScrapingRequest(
+        location=location,
+        business_type=industry,
+        radius=10,
+        max_results=100,
+        sources=selected_sources,
+    )
+
+    task_id = str(uuid.uuid4())
+    _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
+
+    try:
+        db_task = LeadScrapeTask(
+            id=task_id,
+            organization_id=current_user["organization_id"],
+            location=request_model.location,
+            business_type=request_model.business_type,
+            radius=request_model.radius,
+            max_results=request_model.max_results,
+            requested_sources=selected_sources,
+            status=TaskStatus.RUNNING,
+            total_found=0,
+            source_results=None,
+            summary=None,
+            created_at=datetime.utcnow(),
+            started_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(db_task)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to persist strategy lead task: {str(exc)}")
+
+    background_tasks.add_task(
+        _scrape_leads_task,
+        task_id,
+        request_model,
+        current_user["organization_id"],
+    )
+
+    return {
+        "success": True,
+        "job_id": task_id,
+        "message": "Lead generation started from strategy",
+    }
 
 
 @app.post("/api/leads/scrape", tags=["Lead Generation"])

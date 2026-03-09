@@ -9,7 +9,19 @@ from datetime import datetime, timedelta
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.database import init_db, FeatureMatrix, LicenseType, SessionLocal, Organization, User, License, LicenseStatus, LicensePeriod, UserRole
+from shared.database import (
+    init_db,
+    FeatureMatrix,
+    LicenseType,
+    SessionLocal,
+    Organization,
+    User,
+    License,
+    LicenseStatus,
+    LicensePeriod,
+    UserRole,
+    ContinentMaster,
+)
 from shared.config import LICENSE_FEATURES
 from shared.auth import get_password_hash
 
@@ -36,6 +48,35 @@ def initialize_feature_matrix():
         print("Feature matrix initialized successfully")
     except Exception as e:
         print(f"Error initializing feature matrix: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def initialize_continent_master():
+    """Initialize continent master data if missing."""
+    db = SessionLocal()
+    try:
+        existing = db.query(ContinentMaster).count()
+        if existing > 0:
+            print("Continent master already initialized")
+            return
+
+        continents = [
+            "Asia",
+            "Africa",
+            "Europe",
+            "MENA",
+            "North America",
+            "South America",
+        ]
+        for name in continents:
+            db.add(ContinentMaster(name=name))
+
+        db.commit()
+        print("Continent master initialized successfully")
+    except Exception as e:
+        print(f"Error initializing continent master: {e}")
         db.rollback()
     finally:
         db.close()
@@ -141,6 +182,9 @@ if __name__ == "__main__":
     
     print("Initializing feature matrix...")
     initialize_feature_matrix()
+
+    print("Initializing continent master...")
+    initialize_continent_master()
 
     if os.getenv("ENABLE_SEED_DATA", "false").lower() == "true":
         print("Seeding default org/admin/license...")

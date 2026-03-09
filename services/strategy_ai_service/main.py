@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from shared.database import get_db, Strategy, StrategyVersion
+from shared.database import get_db, Strategy, StrategyVersion, ContinentMaster
 from shared.auth import get_current_user, require_feature, FeatureName
 from shared.strategy_providers import StrategyProviderFactory, LLMProviderError
 from shared.config import (
@@ -55,7 +55,9 @@ class BusinessProfile(BaseModel):
     industry: str = Field(..., description="Industry vertical")
     company_size: str = Field(..., description="Company size category")
     revenue: Optional[float] = Field(None, description="Annual revenue")
-    geography: str = Field(..., description="Geographic market")
+    continent: str = Field(..., description="Continent")
+    country: Optional[str] = Field(None, description="Country")
+    region: Optional[str] = Field(None, description="Region")
     marketing_goals: List[str] = Field(..., description="List of marketing objectives")
     budget_range: Optional[str] = Field(None, description="Marketing budget range")
     target_audience: Optional[str] = Field(None, description="Target audience description")
@@ -70,6 +72,44 @@ class LLMTestRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=4000, description="Prompt text for provider connectivity test")
 
 # ===== STRATEGY GENERATION =====
+
+
+def _build_geography_context(continent: str, country: Optional[str], region: Optional[str]) -> Dict[str, Any]:
+    """Build structured geography context for provider prompts and persistence."""
+    continent_text = str(continent or "").strip()
+    country_text = str(country or "").strip()
+    region_text = str(region or "").strip()
+
+    geography_label_parts = [continent_text]
+    if country_text:
+        geography_label_parts.append(country_text)
+    if region_text:
+        geography_label_parts.append(region_text)
+
+    return {
+        "continent": continent_text,
+        "country": country_text or None,
+        "region": region_text or None,
+        "geography": ", ".join([part for part in geography_label_parts if part]),
+    }
+
+
+@app.get("/api/strategy/master/continents", tags=["Master Data"])
+@app.get("/api/master/continents", tags=["Master Data"])
+async def get_continent_master(
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
+    db: Session = Depends(get_db)
+):
+    rows = db.query(ContinentMaster).order_by(ContinentMaster.id.asc()).all()
+    return {
+        "continents": [
+            {
+                "id": row.id,
+                "name": row.name,
+            }
+            for row in rows
+        ]
+    }
 
 def normalize_website_link(website_link: Optional[str]) -> str:
     """Normalize and validate website link for strategy context."""
@@ -102,17 +142,34 @@ async def generate_marketing_strategy(
     try:
         profile = request.business_profile
         normalized_website_link = normalize_website_link(profile.website_link)
+
+        continent_name = str(profile.continent or "").strip()
+        continent_exists = (
+            db.query(ContinentMaster)
+            .filter(func.lower(ContinentMaster.name) == continent_name.lower())
+            .first()
+        )
+        if not continent_exists:
+            raise HTTPException(status_code=422, detail="Invalid continent. Use /api/strategy/master/continents")
         
         # Get strategy provider (Ollama or OpenAI)
         provider = StrategyProviderFactory.create_provider()
         
         # Prepare business profile dict
+        geography_context = _build_geography_context(
+            continent=profile.continent,
+            country=profile.country,
+            region=profile.region,
+        )
         profile_dict = {
             "business_name": profile.business_name,
             "industry": profile.industry,
             "company_size": profile.company_size,
             "revenue": profile.revenue,
-            "geography": profile.geography,
+            "continent": geography_context["continent"],
+            "country": geography_context["country"],
+            "region": geography_context["region"],
+            "geography": geography_context["geography"],
             "marketing_goals": profile.marketing_goals,
             "budget_range": profile.budget_range,
             "target_audience": profile.target_audience,
@@ -249,6 +306,9 @@ async def llm_test(
             "industry": "Technology",
             "company_size": "1-10",
             "revenue": None,
+            "continent": "North America",
+            "country": "United States",
+            "region": "Global",
             "geography": "Global",
             "marketing_goals": ["Validation"],
             "budget_range": "N/A",

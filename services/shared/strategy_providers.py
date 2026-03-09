@@ -227,152 +227,6 @@ class OllamaStrategyProvider(StrategyProvider):
             logger.warning("Fallback trigger condition: generation_exception")
             return self._get_minimal_fallback_strategy(business_profile, reason="generation_exception")
 
-
-class OllamaCloudStrategyProvider(OllamaStrategyProvider):
-    """Official Ollama cloud API provider."""
-
-    TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
-
-    def __init__(self):
-        self.base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/api").rstrip("/")
-        self.api_key = os.getenv("OLLAMA_API_KEY", "")
-        self.model = os.getenv("MODEL_NAME", os.getenv("OLLAMA_STRATEGY_MODEL", "gpt-oss:120b"))
-        self.timeout = int(os.getenv("REQUEST_TIMEOUT", os.getenv("OLLAMA_TIMEOUT", "60")))
-        self.max_retries = 3
-
-    def is_available(self) -> bool:
-        return bool(self.api_key)
-
-    def _generate_endpoint(self) -> str:
-        return f"{self.base_url}/generate" if self.base_url.endswith("/api") else f"{self.base_url}/api/generate"
-
-    async def _request_with_retry(self, prompt: str) -> Dict[str, Any]:
-        import httpx
-
-        if not self.api_key:
-            raise LLMProviderError("OLLAMA_API_KEY is required for ollama_cloud provider")
-        if self.timeout <= 0:
-            raise LLMProviderError("REQUEST_TIMEOUT must be greater than 0")
-
-        url = self._generate_endpoint()
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "format": "json",
-            "stream": False,
-            "options": {
-                "num_predict": 1200,
-                "temperature": 0.7,
-                "top_p": 0.9
-            }
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=httpx.Timeout(float(self.timeout))) as client:
-            for attempt in range(1, self.max_retries + 1):
-                try:
-                    response = await client.post(url, json=payload, headers=headers)
-                except (httpx.RequestError, httpx.TimeoutException) as exc:
-                    logger.warning(
-                        "Ollama cloud request attempt failed",
-                        extra={"provider": "ollama_cloud", "attempt": attempt, "error_type": type(exc).__name__}
-                    )
-                    if attempt < self.max_retries:
-                        backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
-                        await asyncio.sleep(backoff)
-                        continue
-                    raise LLMProviderError("Ollama cloud request failed") from exc
-
-                if response.status_code in self.TRANSIENT_STATUS_CODES and attempt < self.max_retries:
-                    backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
-                    await asyncio.sleep(backoff)
-                    continue
-
-                if response.status_code >= 400:
-                    error_message = None
-                    try:
-                        error_body = response.json()
-                        error_message = error_body.get("error") if isinstance(error_body, dict) else None
-                    except Exception:
-                        error_message = response.text
-                    raise LLMProviderError(
-                        f"Ollama cloud error ({response.status_code}): {(error_message or 'unknown error')[:300]}"
-                    )
-
-                try:
-                    return response.json()
-                except Exception as exc:
-                    raise LLMProviderError("Invalid JSON response from Ollama cloud") from exc
-
-        raise LLMProviderError("Ollama cloud request failed after retries")
-
-    async def generate_strategy(
-        self,
-        business_profile: Dict[str, Any],
-        additional_context: Optional[str] = None
-    ) -> Dict[str, Any]:
-        import json
-
-        prompt = self._build_strategy_prompt(business_profile, additional_context)
-        logger.info(
-            "Using Ollama cloud provider for strategy generation",
-            extra={"provider": "ollama_cloud", "model": self.model, "base_url": self.base_url}
-        )
-        try:
-            result = await self._request_with_retry(prompt)
-            strategy_text = self._extract_strategy_text(result)
-            if isinstance(strategy_text, dict):
-                strategy_text = json.dumps(strategy_text)
-            logger.debug(
-                "JSON_PARSE_STAGE=initial snippet=%s",
-                self._snippet(strategy_text)
-            )
-            parsed = self._parse_strategy_response(
-                strategy_text,
-                business_profile,
-                allow_fallback=False
-            )
-            if parsed:
-                parsed["provider"] = "ollama_cloud"
-                parsed["model"] = self.model
-                return parsed
-
-            retry_prompt = (
-                f"{prompt}\n\n"
-                "The previous response was not valid JSON.\n"
-                "Return ONLY valid JSON. No text outside JSON."
-            )
-            retry_result = await self._request_with_retry(retry_prompt)
-            retry_text = self._extract_strategy_text(retry_result)
-            if isinstance(retry_text, dict):
-                retry_text = json.dumps(retry_text)
-            logger.debug(
-                "JSON_PARSE_STAGE=retry snippet=%s",
-                self._snippet(retry_text)
-            )
-            retry_parsed = self._parse_strategy_response(
-                retry_text,
-                business_profile,
-                allow_fallback=False
-            )
-            if retry_parsed:
-                retry_parsed["provider"] = "ollama_cloud"
-                retry_parsed["model"] = self.model
-                return retry_parsed
-
-            logger.warning(
-                "JSON_PARSE_STAGE=fallback snippet=%s",
-                self._snippet(retry_text or strategy_text)
-            )
-            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_parse_failure")
-        except LLMProviderError as exc:
-            logger.error("Ollama cloud strategy generation failed: %s", str(exc))
-            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_request_error")
-    
     def _build_strategy_prompt(
         self,
         business_profile: Dict[str, Any],
@@ -381,6 +235,9 @@ class OllamaCloudStrategyProvider(OllamaStrategyProvider):
         """Build prompt for strategy generation"""
         budget_range = business_profile.get('budget_range', 'Not specified')
         marketing_goals = ', '.join(business_profile.get('marketing_goals', []))
+        continent = business_profile.get('continent') or 'Not specified'
+        country = business_profile.get('country') or 'Not specified'
+        region = business_profile.get('region') or 'Not specified'
 
         system_prompt = """You are a marketing strategy generator.
 
@@ -425,7 +282,10 @@ BUSINESS PROFILE:
 - Industry: {business_profile.get('industry', 'N/A')}
 - Company Size: {business_profile.get('company_size', 'N/A')}
 - Annual Revenue: {business_profile.get('revenue', 'Not specified')}
-- Geography: {business_profile.get('geography', 'N/A')}
+- Target Geography:
+  - Continent: {continent}
+  - Country: {country}
+  - Region: {region}
 - Marketing Goals: {marketing_goals}
 - Budget Range: {budget_range}
 - Target Audience: {business_profile.get('target_audience', 'Not specified')}
@@ -436,13 +296,17 @@ BUSINESS PROFILE:
             prompt += f"ADDITIONAL CONTEXT: {additional_context}\n\n"
         
         prompt += """INSTRUCTIONS:
-1. Analyze the business profile and generate a tailored marketing strategy
-2. Create a campaign timeline based on the marketing goals and industry best practices
-3. Allocate budget based on customer preferences, industry standards, and what will achieve their goals
-4. Research and provide competitor budget benchmarks for similar companies in this industry
-5. If the budget seems low for the goals, provide specific recommendations and warnings
-6. All recommendations must be data-driven and industry-specific
-7. Use the website URL context to tailor messaging, channel strategy, and content angles
+1. Analyze the business profile and generate a tailored marketing strategy.
+2. Ensure recommendations are specific to the business industry and target geography (continent/country/region).
+3. Include a clear Channel Strategy mapped to the most relevant channels for this profile.
+4. Include a practical Lead Generation Plan aligned to goals and audience segments.
+5. Include Content Themes tailored to buyer intent and industry context.
+6. Include Campaign Recommendations with sequencing through the timeline phases.
+7. Create a campaign timeline based on the marketing goals and industry best practices.
+8. Allocate budget based on customer preferences, industry standards, and what will achieve their goals.
+9. Research and provide competitor budget benchmarks for similar companies in this industry.
+10. If the budget seems low for the goals, provide specific recommendations and warnings.
+11. Use the website URL context to tailor messaging, channel strategy, and content angles.
 
 REQUIREMENTS (MUST FOLLOW):
 - Every field in the JSON must be present
@@ -677,6 +541,152 @@ Provide only valid JSON, no additional text and no Markdown code fences. If unsu
             "model": self.model
         }
 
+
+class OllamaCloudStrategyProvider(OllamaStrategyProvider):
+    """Official Ollama cloud API provider."""
+
+    TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
+
+    def __init__(self):
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/api").rstrip("/")
+        self.api_key = os.getenv("OLLAMA_API_KEY", "")
+        self.model = os.getenv("MODEL_NAME", os.getenv("OLLAMA_STRATEGY_MODEL", "gpt-oss:120b"))
+        self.timeout = int(os.getenv("REQUEST_TIMEOUT", os.getenv("OLLAMA_TIMEOUT", "60")))
+        self.max_retries = 3
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def _generate_endpoint(self) -> str:
+        return f"{self.base_url}/generate" if self.base_url.endswith("/api") else f"{self.base_url}/api/generate"
+
+    async def _request_with_retry(self, prompt: str) -> Dict[str, Any]:
+        import httpx
+
+        if not self.api_key:
+            raise LLMProviderError("OLLAMA_API_KEY is required for ollama_cloud provider")
+        if self.timeout <= 0:
+            raise LLMProviderError("REQUEST_TIMEOUT must be greater than 0")
+
+        url = self._generate_endpoint()
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "format": "json",
+            "stream": False,
+            "options": {
+                "num_predict": 1200,
+                "temperature": 0.7,
+                "top_p": 0.9
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(self.timeout))) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = await client.post(url, json=payload, headers=headers)
+                except (httpx.RequestError, httpx.TimeoutException) as exc:
+                    logger.warning(
+                        "Ollama cloud request attempt failed",
+                        extra={"provider": "ollama_cloud", "attempt": attempt, "error_type": type(exc).__name__}
+                    )
+                    if attempt < self.max_retries:
+                        backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise LLMProviderError("Ollama cloud request failed") from exc
+
+                if response.status_code in self.TRANSIENT_STATUS_CODES and attempt < self.max_retries:
+                    backoff = min(6.0, 0.5 * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25))
+                    await asyncio.sleep(backoff)
+                    continue
+
+                if response.status_code >= 400:
+                    error_message = None
+                    try:
+                        error_body = response.json()
+                        error_message = error_body.get("error") if isinstance(error_body, dict) else None
+                    except Exception:
+                        error_message = response.text
+                    raise LLMProviderError(
+                        f"Ollama cloud error ({response.status_code}): {(error_message or 'unknown error')[:300]}"
+                    )
+
+                try:
+                    return response.json()
+                except Exception as exc:
+                    raise LLMProviderError("Invalid JSON response from Ollama cloud") from exc
+
+        raise LLMProviderError("Ollama cloud request failed after retries")
+
+    async def generate_strategy(
+        self,
+        business_profile: Dict[str, Any],
+        additional_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        import json
+
+        prompt = self._build_strategy_prompt(business_profile, additional_context)
+        logger.info(
+            "Using Ollama cloud provider for strategy generation",
+            extra={"provider": "ollama_cloud", "model": self.model, "base_url": self.base_url}
+        )
+        try:
+            result = await self._request_with_retry(prompt)
+            strategy_text = self._extract_strategy_text(result)
+            if isinstance(strategy_text, dict):
+                strategy_text = json.dumps(strategy_text)
+            logger.debug(
+                "JSON_PARSE_STAGE=initial snippet=%s",
+                self._snippet(strategy_text)
+            )
+            parsed = self._parse_strategy_response(
+                strategy_text,
+                business_profile,
+                allow_fallback=False
+            )
+            if parsed:
+                parsed["provider"] = "ollama_cloud"
+                parsed["model"] = self.model
+                return parsed
+
+            retry_prompt = (
+                f"{prompt}\n\n"
+                "The previous response was not valid JSON.\n"
+                "Return ONLY valid JSON. No text outside JSON."
+            )
+            retry_result = await self._request_with_retry(retry_prompt)
+            retry_text = self._extract_strategy_text(retry_result)
+            if isinstance(retry_text, dict):
+                retry_text = json.dumps(retry_text)
+            logger.debug(
+                "JSON_PARSE_STAGE=retry snippet=%s",
+                self._snippet(retry_text)
+            )
+            retry_parsed = self._parse_strategy_response(
+                retry_text,
+                business_profile,
+                allow_fallback=False
+            )
+            if retry_parsed:
+                retry_parsed["provider"] = "ollama_cloud"
+                retry_parsed["model"] = self.model
+                return retry_parsed
+
+            logger.warning(
+                "JSON_PARSE_STAGE=fallback snippet=%s",
+                self._snippet(retry_text or strategy_text)
+            )
+            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_parse_failure")
+        except LLMProviderError as exc:
+            logger.error("Ollama cloud strategy generation failed: %s", str(exc))
+            return self._get_minimal_fallback_strategy(business_profile, reason="cloud_request_error")
+    
 # ===== OPENAI PROVIDER (API) =====
 
 class OpenAIStrategyProvider(StrategyProvider):
@@ -741,6 +751,9 @@ class OpenAIStrategyProvider(StrategyProvider):
         """Build prompt for OpenAI"""
         budget_range = business_profile.get('budget_range', 'Not specified')
         marketing_goals = ', '.join(business_profile.get('marketing_goals', []))
+        continent = business_profile.get('continent') or 'Not specified'
+        country = business_profile.get('country') or 'Not specified'
+        region = business_profile.get('region') or 'Not specified'
         
         prompt = f"""You are an expert B2B digital marketing strategy consultant with deep industry knowledge. Generate a comprehensive, data-driven marketing strategy based on the business profile provided.
 
@@ -749,7 +762,10 @@ BUSINESS PROFILE:
 - Industry: {business_profile.get('industry', 'N/A')}
 - Company Size: {business_profile.get('company_size', 'N/A')}
 - Annual Revenue: {business_profile.get('revenue', 'Not specified')}
-- Geography: {business_profile.get('geography', 'N/A')}
+- Target Geography:
+  - Continent: {continent}
+  - Country: {country}
+  - Region: {region}
 - Marketing Goals: {marketing_goals}
 - Budget Range: {budget_range}
 - Target Audience: {business_profile.get('target_audience', 'Not specified')}
@@ -760,13 +776,17 @@ BUSINESS PROFILE:
             prompt += f"ADDITIONAL CONTEXT: {additional_context}\n\n"
         
         prompt += """INSTRUCTIONS:
-1. Analyze the business profile and generate a tailored marketing strategy
-2. Create a campaign timeline based on the marketing goals and industry best practices
-3. Allocate budget based on customer preferences, industry standards, and what will achieve their goals
-4. Research and provide competitor budget benchmarks for similar companies in this industry
-5. If the budget seems low for the goals, provide specific recommendations and warnings
-6. All recommendations must be data-driven and industry-specific
-7. Use the website URL context to tailor messaging, channel strategy, and content angles
+1. Analyze the business profile and generate a tailored marketing strategy.
+2. Ensure recommendations are specific to the business industry and target geography (continent/country/region).
+3. Include a clear Channel Strategy mapped to the most relevant channels for this profile.
+4. Include a practical Lead Generation Plan aligned to goals and audience segments.
+5. Include Content Themes tailored to buyer intent and industry context.
+6. Include Campaign Recommendations with sequencing through the timeline phases.
+7. Create a campaign timeline based on the marketing goals and industry best practices.
+8. Allocate budget based on customer preferences, industry standards, and what will achieve their goals.
+9. Research and provide competitor budget benchmarks for similar companies in this industry.
+10. If the budget seems low for the goals, provide specific recommendations and warnings.
+11. Use the website URL context to tailor messaging, channel strategy, and content angles.
 
 Return a JSON object with this exact structure:
 {

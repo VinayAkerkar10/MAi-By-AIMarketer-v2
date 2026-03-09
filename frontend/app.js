@@ -2,6 +2,7 @@
 let appData = {
     businessProfile: null,
     generatedStrategy: null,
+    currentStrategyId: null,
     scrapedLeads: [],
     enrichedData: [],
     campaigns: [],
@@ -58,6 +59,16 @@ let strategyHistoryRequestVersion = 0;
 let campaignStrategyOptions = [];
 let campaignStrategyVersionOptions = [];
 let strategyVersionRequestToken = 0;
+let continentMasterOptions = [];
+
+const CONTINENT_COUNTRY_MAP = {
+    "Asia": ["India", "Indonesia", "Malaysia", "Singapore", "Thailand", "Vietnam", "Philippines", "Japan", "South Korea", "China"],
+    "Africa": ["South Africa", "Nigeria", "Kenya", "Egypt", "Morocco", "Ghana", "Ethiopia"],
+    "Europe": ["United Kingdom", "Germany", "France", "Italy", "Spain", "Netherlands", "Sweden"],
+    "MENA": ["UAE", "Saudi Arabia", "Qatar", "Kuwait", "Bahrain", "Oman", "Jordan"],
+    "North America": ["United States", "Canada", "Mexico"],
+    "South America": ["Brazil", "Argentina", "Chile", "Colombia", "Peru"],
+};
 
 function redirectToLogin() {
     const currentPath = window.location.pathname || "";
@@ -500,11 +511,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Small delay to ensure all elements are rendered
-    setTimeout(() => {
+    setTimeout(async () => {
         initializeApp();
         setupNavigation();
-        loadDataFromStorage();
         setupEventListeners();
+        await loadContinentMasterData();
+        loadDataFromStorage();
         initializeSampleData();
         
         // Show initial module
@@ -552,6 +564,86 @@ function initializeApp() {
     }
     
     console.log('App data initialized:', appData);
+}
+
+async function loadContinentMasterData() {
+    try {
+        const response = await apiRequest('/api/strategy/master/continents');
+        const rows = Array.isArray(response?.continents) ? response.continents : [];
+        continentMasterOptions = rows
+            .map((row) => ({
+                id: row?.id,
+                name: String(row?.name || '').trim()
+            }))
+            .filter((row) => row.name.length > 0);
+    } catch (error) {
+        console.error('Continent master loading error:', error);
+        continentMasterOptions = [];
+    }
+    populateContinentDropdown();
+}
+
+function populateContinentDropdown() {
+    const continentSelect = document.getElementById('continent');
+    if (!continentSelect) return;
+
+    const previousValue = continentSelect.value || '';
+    continentSelect.innerHTML = '<option value="">Select Continent</option>';
+
+    const options = continentMasterOptions.length
+        ? continentMasterOptions.map((row) => row.name)
+        : ["Asia", "Africa", "Europe", "MENA", "North America", "South America"];
+
+    options.forEach((name) => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        continentSelect.appendChild(option);
+    });
+
+    if (previousValue && options.includes(previousValue)) {
+        continentSelect.value = previousValue;
+    }
+}
+
+function populateCountryDropdown(continentName, selectedCountry = '') {
+    const countrySelect = document.getElementById('country');
+    if (!countrySelect) return;
+
+    const safeContinent = String(continentName || '').trim();
+    const countries = CONTINENT_COUNTRY_MAP[safeContinent] || [];
+    countrySelect.innerHTML = '<option value="">Select Country (Optional)</option>';
+
+    countries.forEach((country) => {
+        const option = document.createElement('option');
+        option.value = country;
+        option.textContent = country;
+        countrySelect.appendChild(option);
+    });
+
+    if (selectedCountry && countries.includes(selectedCountry)) {
+        countrySelect.value = selectedCountry;
+    }
+}
+
+function updateProfileCTAState() {
+    const ctaBtn = document.getElementById('generateStrategyFromProfile');
+    if (!ctaBtn) return;
+    ctaBtn.classList.toggle('hidden', !appData.businessProfile);
+}
+
+async function handleGenerateStrategyFromProfile() {
+    if (!appData.businessProfile) {
+        showErrorMessage('Please complete your Business Profile first.');
+        return;
+    }
+
+    const strategyTab = document.querySelector('.nav__tab[data-module="strategy-generator"]');
+    showModule('strategy-generator');
+    if (strategyTab) {
+        setActiveTab(strategyTab);
+    }
+    await generateAIStrategy();
 }
 
 function setupNavigation() {
@@ -655,6 +747,20 @@ function setupEventListeners() {
         console.log('Business profile form listener added');
     }
 
+    const continentSelect = document.getElementById('continent');
+    if (continentSelect && !continentSelect.dataset.bound) {
+        continentSelect.addEventListener('change', function () {
+            populateCountryDropdown(this.value, '');
+        });
+        continentSelect.dataset.bound = '1';
+    }
+
+    const generateFromProfileBtn = document.getElementById('generateStrategyFromProfile');
+    if (generateFromProfileBtn && !generateFromProfileBtn.dataset.bound) {
+        generateFromProfileBtn.addEventListener('click', handleGenerateStrategyFromProfile);
+        generateFromProfileBtn.dataset.bound = '1';
+    }
+
     // AI Strategy Generator
     const generateStrategyBtn = document.getElementById('generateStrategy');
     if (generateStrategyBtn) {
@@ -671,6 +777,18 @@ function setupEventListeners() {
     if (strategyVersionSelect && !strategyVersionSelect.dataset.bound) {
         strategyVersionSelect.addEventListener('change', handleStrategyVersionChange);
         strategyVersionSelect.dataset.bound = '1';
+    }
+
+    const createCampaignFromStrategyBtn = document.getElementById('createCampaignFromStrategyBtn');
+    if (createCampaignFromStrategyBtn && !createCampaignFromStrategyBtn.dataset.bound) {
+        createCampaignFromStrategyBtn.addEventListener('click', createCampaignFromStrategy);
+        createCampaignFromStrategyBtn.dataset.bound = '1';
+    }
+
+    const generateLeadsFromStrategyBtn = document.getElementById('generateLeadsFromStrategyBtn');
+    if (generateLeadsFromStrategyBtn && !generateLeadsFromStrategyBtn.dataset.bound) {
+        generateLeadsFromStrategyBtn.addEventListener('click', generateLeadsFromStrategy);
+        generateLeadsFromStrategyBtn.dataset.bound = '1';
     }
 
     // Lead Scraper Form
@@ -728,6 +846,7 @@ function setupEventListeners() {
         logoutBtn.addEventListener('click', handleLogout);
     }
     updateLogoutButtonVisibility();
+    updateProfileCTAState();
 
     // Modal close functionality
     document.addEventListener('click', function(e) {
@@ -746,7 +865,9 @@ function handleBusinessProfileSubmit(e) {
     const industry = document.getElementById('industry').value;
     const companySize = document.getElementById('companySize').value;
     const revenue = parseInt(document.getElementById('revenue').value) || 0;
-    const geography = document.getElementById('geography').value;
+    const continent = document.getElementById('continent').value;
+    const country = document.getElementById('country').value;
+    const region = document.getElementById('region').value.trim();
     const budget = parseInt(document.getElementById('budget').value) || 0;
     const targetAudience = document.getElementById('targetAudience').value;
     const websiteLink = document.getElementById('websiteLink').value.trim();
@@ -758,7 +879,9 @@ function handleBusinessProfileSubmit(e) {
         industry,
         companySize,
         revenue,
-        geography,
+        continent,
+        country,
+        region,
         marketingGoals,
         budget,
         targetAudience,
@@ -770,6 +893,7 @@ function handleBusinessProfileSubmit(e) {
     appData.businessProfile = profile;
     saveDataToStorage();
     displayProfileSummary(profile);
+    updateProfileCTAState();
     showSuccessMessage('Business profile saved successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
 }
 
@@ -794,7 +918,13 @@ function displayProfileSummary(profile) {
                 <strong>Annual Revenue:</strong> $${profile.revenue.toLocaleString()}
             </div>
             <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Markets:</strong> ${profile.geography}
+                <strong>Continent:</strong> ${profile.continent || 'N/A'}
+            </div>
+            <div class="summary-item" style="margin-bottom: 12px;">
+                <strong>Country:</strong> ${profile.country || 'N/A'}
+            </div>
+            <div class="summary-item" style="margin-bottom: 12px;">
+                <strong>Region:</strong> ${profile.region || 'N/A'}
             </div>
             <div class="summary-item" style="margin-bottom: 12px;">
                 <strong>Marketing Goals:</strong> ${profile.marketingGoals.join(', ')}
@@ -863,6 +993,7 @@ async function loadStrategyHistoryOptions() {
         if (!strategies.length) {
             historySelect.innerHTML = '<option value="">No saved strategies</option>';
             historySelect.disabled = true;
+            appData.currentStrategyId = null;
             return;
         }
 
@@ -878,6 +1009,20 @@ async function loadStrategyHistoryOptions() {
             historySelect.appendChild(option);
         });
         historySelect.disabled = false;
+
+        const optionValues = Array.from(historySelect.options)
+            .map((opt) => String(opt.value || '').trim())
+            .filter((val) => !!val);
+
+        if (optionValues.length > 0) {
+            const preferredId = String(appData.currentStrategyId || '').trim();
+            const nextId = optionValues.includes(preferredId) ? preferredId : optionValues[0];
+            historySelect.value = nextId;
+            appData.currentStrategyId = nextId;
+            saveDataToStorage();
+        } else {
+            appData.currentStrategyId = null;
+        }
     } catch (error) {
         if (requestVersion !== strategyHistoryRequestVersion) return;
         console.error('Strategy history loading error:', error);
@@ -891,6 +1036,8 @@ async function handleStrategyHistoryChange(event) {
     const strategyId = event?.target?.value || '';
     const versionSelect = document.getElementById('strategyVersionSelect');
     if (!versionSelect) return;
+    appData.currentStrategyId = strategyId || null;
+    saveDataToStorage();
 
     resetStrategyVersionDropdown('Loading versions...');
     if (!strategyId) {
@@ -982,7 +1129,9 @@ async function generateAIStrategy() {
                 industry: profile.industry,
                 company_size: profile.companySize,
                 revenue: profile.revenue || null,
-                geography: profile.geography,
+                continent: profile.continent,
+                country: profile.country || null,
+                region: profile.region || null,
                 marketing_goals: Array.isArray(profile.marketingGoals) ? profile.marketingGoals : [],
                 budget_range: profile.budget ? `$${Number(profile.budget).toLocaleString()}` : null,
                 target_audience: profile.targetAudience || null,
@@ -999,7 +1148,7 @@ async function generateAIStrategy() {
 
         loadingDiv.classList.add('hidden');
         resultsDiv.classList.remove('hidden');
-        loadStrategyHistoryOptions();
+        await loadStrategyHistoryOptions();
         showSuccessMessage('AI strategy generated successfully!');
     } catch (error) {
         console.error('Strategy generation error:', error);
@@ -1152,6 +1301,64 @@ function displayStrategyResults(strategy) {
         exportBtn.onclick = () => {
             showSuccessMessage('Strategy export initiated! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
         };
+    }
+}
+
+function getCurrentStrategyId() {
+    const persistentId = appData?.currentStrategyId;
+    if (typeof persistentId === 'string' && persistentId.trim()) {
+        return persistentId.trim();
+    }
+    const fallbackId = appData?.generatedStrategy?.strategy_id;
+    return typeof fallbackId === 'string' && fallbackId.trim() ? fallbackId.trim() : '';
+}
+
+function setStrategyExecutionStatus(message, isError = false) {
+    const statusEl = document.getElementById('strategyExecutionStatus');
+    if (!statusEl) return;
+    statusEl.innerHTML = `<span class="${isError ? 'status status--error' : 'status status--success'}">${message}</span>`;
+}
+
+async function createCampaignFromStrategy() {
+    const strategyId = getCurrentStrategyId();
+    if (!strategyId) {
+        showErrorMessage('Please generate or load a strategy first.');
+        setStrategyExecutionStatus('Strategy ID not found. Generate or load a strategy first.', true);
+        return;
+    }
+
+    try {
+        const response = await apiRequest('/api/campaigns/from-strategy', 'POST', {
+            strategy_id: strategyId
+        });
+        await loadCampaigns();
+        const campaignId = response?.campaign_id || 'unknown';
+        setStrategyExecutionStatus(`Campaign created from strategy (ID: ${campaignId}).`);
+        showSuccessMessage(response?.message || 'Campaign created from strategy.');
+    } catch (error) {
+        setStrategyExecutionStatus(error.message || 'Failed to create campaign from strategy.', true);
+        showErrorMessage(error.message || 'Failed to create campaign from strategy.');
+    }
+}
+
+async function generateLeadsFromStrategy() {
+    const strategyId = getCurrentStrategyId();
+    if (!strategyId) {
+        showErrorMessage('Please generate or load a strategy first.');
+        setStrategyExecutionStatus('Strategy ID not found. Generate or load a strategy first.', true);
+        return;
+    }
+
+    try {
+        const response = await apiRequest('/api/leads/from-strategy', 'POST', {
+            strategy_id: strategyId
+        });
+        const jobId = response?.job_id || response?.task_id || 'unknown';
+        setStrategyExecutionStatus(`Lead generation started (Job ID: ${jobId}).`);
+        showSuccessMessage(response?.message || 'Lead generation started from strategy.');
+    } catch (error) {
+        setStrategyExecutionStatus(error.message || 'Failed to start lead generation from strategy.', true);
+        showErrorMessage(error.message || 'Failed to start lead generation from strategy.');
     }
 }
 
@@ -2500,6 +2707,7 @@ function saveDataToStorage() {
         const dataToSave = {
             businessProfile: appData.businessProfile,
             generatedStrategy: appData.generatedStrategy,
+            currentStrategyId: appData.currentStrategyId,
             scrapedLeads: appData.scrapedLeads,
             enrichedData: appData.enrichedData,
             campaigns: appData.campaigns,
@@ -2518,15 +2726,32 @@ function loadDataFromStorage() {
             const parsedData = JSON.parse(savedData);
             
             if (parsedData.businessProfile) {
+                const savedProfile = parsedData.businessProfile;
                 appData.businessProfile = {
-                    ...parsedData.businessProfile,
-                    websiteLink: parsedData.businessProfile.websiteLink || ''
+                    ...savedProfile,
+                    continent: savedProfile.continent || '',
+                    country: savedProfile.country || '',
+                    region: savedProfile.region || '',
+                    websiteLink: savedProfile.websiteLink || ''
                 };
+                const continentSelect = document.getElementById('continent');
+                if (continentSelect && appData.businessProfile.continent) {
+                    continentSelect.value = appData.businessProfile.continent;
+                }
+                populateCountryDropdown(appData.businessProfile.continent, appData.businessProfile.country);
+                const regionInput = document.getElementById('region');
+                if (regionInput) {
+                    regionInput.value = appData.businessProfile.region || '';
+                }
                 displayProfileSummary(appData.businessProfile);
             }
             
             if (parsedData.generatedStrategy) {
                 appData.generatedStrategy = parsedData.generatedStrategy;
+            }
+
+            if (typeof parsedData.currentStrategyId === 'string' && parsedData.currentStrategyId.trim()) {
+                appData.currentStrategyId = parsedData.currentStrategyId.trim();
             }
             
             if (parsedData.scrapedLeads) {
@@ -2540,12 +2765,14 @@ function loadDataFromStorage() {
     } catch (error) {
         console.warn('Could not load data from localStorage:', error);
     }
+    updateProfileCTAState();
 }
 
 function exportApplicationData() {
     const exportData = {
         businessProfile: appData.businessProfile,
         generatedStrategy: appData.generatedStrategy,
+        currentStrategyId: appData.currentStrategyId,
         scrapedLeads: appData.scrapedLeads,
         campaigns: appData.campaigns,
         exportDate: new Date().toISOString(),
