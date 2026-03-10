@@ -23,10 +23,13 @@ if config.config_file_name is not None:
 # Use shared SQLAlchemy metadata.
 target_metadata = Base.metadata
 
-# Always override the Alembic URL from environment when available.
+# Always require DATABASE_URL for migrations and never fall back to alembic.ini placeholder.
 database_url = os.getenv("DATABASE_URL")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+if not database_url:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is required for Alembic migrations."
+    )
+config.set_main_option("sqlalchemy.url", database_url)
 
 
 def run_migrations_offline() -> None:

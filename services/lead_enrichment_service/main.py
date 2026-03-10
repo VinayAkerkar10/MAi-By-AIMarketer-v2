@@ -4,8 +4,9 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
+import time
 import uuid
 from uuid import UUID
 import pandas as pd
@@ -30,9 +31,14 @@ from shared.database import (
     LeadSource,
     Strategy,
     StrategyVersion,
+    ApiUsageAuditLog,
+    Organization,
+    User,
+    UserRole,
 )
 from shared.auth import get_current_user, require_feature
 from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
+from services.lead_enrichment_service.providers.provider_registry import get_provider
 
 app = FastAPI(
     title="MAi Lead Enrichment Service",
@@ -54,7 +60,7 @@ app.add_middleware(
 
 
 class LeadScrapingRequest(BaseModel):
-    location: str = Field(..., description="Geographic location for lead search")
+    location: Union[str, Dict[str, Any]] = Field(..., description="Geographic location for lead search")
     business_type: str = Field(..., description="Type of businesses to search for")
     radius: Optional[int] = Field(10, description="Search radius in kilometers")
     max_results: Optional[int] = Field(100, description="Maximum number of results")
@@ -67,11 +73,6 @@ class StrategyLeadRequest(BaseModel):
 # ===== LEAD SCRAPING =====
 
 SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza"]
-SOURCE_API_KEY_ENV = {
-    "google_maps": "GOOGLE_MAPS_API_KEY",
-    "linkedin": "LINKEDIN_API_KEY",
-    "volza": "VOLZA_API_KEY"
-}
 
 
 def _to_task_status(value: str) -> TaskStatus:
@@ -258,106 +259,47 @@ def _normalize_sources(sources: Optional[List[str]]) -> List[str]:
     return normalized
 
 
-async def _scrape_github_leads(request: LeadScrapingRequest) -> Tuple[str, List[Dict[str, Any]], str]:
-    token = os.getenv("GITHUB_API_TOKEN")
-    if not token:
-        return "error", [], "GitHub API token not configured."
+def _extract_location_text(location_value: Union[str, Dict[str, Any]]) -> str:
+    if isinstance(location_value, dict):
+        text = str(location_value.get("text") or "").strip()
+        return text
+    return str(location_value or "").strip()
 
-    max_results = max(1, min(int(request.max_results or 30), 30))
-    query = f"location:{request.location} {request.business_type} in:bio"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+
+def _send_api_usage_email_alert(
+    organization_name: str,
+    recipients: List[str],
+    user_id: str,
+    provider_name: str,
+    timestamp: datetime,
+    duration: float,
+) -> None:
+    if not recipients:
+        return
+
+    from email.mime.text import MIMEText
+    import smtplib
+
+    subject = "API Usage Notification"
+    body = (
+        f"User: {user_id}\n"
+        f"Organization: {organization_name}\n"
+        f"Provider: {provider_name}\n"
+        f"Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Duration: {round(duration, 3)} seconds\n"
+    )
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = "noreply@aimarketer.local"
+    msg["To"] = ", ".join(recipients)
 
     try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=15) as client:
-            search_response = await client.get(
-                "https://api.github.com/search/users",
-                params={
-                    "q": query,
-                    "per_page": max_results,
-                    "page": 1,
-                    "type": "Users",
-                },
-                headers=headers,
-            )
-
-            if search_response.status_code == 403:
-                remaining = search_response.headers.get("X-RateLimit-Remaining", "")
-                if remaining == "0":
-                    return "error", [], "GitHub API rate limit exceeded."
-                return "error", [], "GitHub API access forbidden."
-
-            if search_response.status_code != 200:
-                return "error", [], f"GitHub API returned status {search_response.status_code}."
-
-            search_json = search_response.json() if search_response.content else {}
-            items = search_json.get("items", []) if isinstance(search_json, dict) else []
-
-            leads: List[Dict[str, Any]] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-
-                username = item.get("login")
-                if not username:
-                    continue
-
-                user_response = await client.get(
-                    f"https://api.github.com/users/{username}",
-                    headers=headers,
-                )
-                if user_response.status_code == 403 and user_response.headers.get("X-RateLimit-Remaining") == "0":
-                    return "error", leads, "GitHub API rate limit exceeded."
-                if user_response.status_code != 200:
-                    continue
-
-                user_data = user_response.json() if user_response.content else {}
-                if not isinstance(user_data, dict):
-                    continue
-
-                repos_response = await client.get(
-                    f"https://api.github.com/users/{username}/repos",
-                    params={"sort": "updated", "per_page": 5},
-                    headers=headers,
-                )
-
-                repos_data = repos_response.json() if repos_response.status_code == 200 and repos_response.content else []
-                top_repos = [
-                    repo.get("name")
-                    for repo in repos_data[:3]
-                    if isinstance(repo, dict) and repo.get("name")
-                ]
-
-                business_name = user_data.get("company") or user_data.get("login") or username
-                website = user_data.get("blog") or user_data.get("html_url") or "N/A"
-
-                lead = {
-                    "business_name": business_name,
-                    "contact_name": user_data.get("name") or "N/A",
-                    "email": user_data.get("email") or "N/A",
-                    "phone": None,
-                    "website": website,
-                    "address": user_data.get("location") or request.location,
-                    "source": "github",
-                    "category": request.business_type,
-                    "scraped_at": datetime.utcnow().isoformat(),
-                    "metadata": {
-                        "followers": user_data.get("followers", 0),
-                        "public_repos": user_data.get("public_repos", 0),
-                        "top_repos": top_repos,
-                        "bio": user_data.get("bio") or "",
-                    },
-                }
-                leads.append(lead)
-
-            return "success", leads, ""
-    except Exception as e:
-        return "error", [], f"GitHub scraping failed: {str(e)}"
+        with smtplib.SMTP("mailhog", 1025, timeout=10) as smtp:
+            smtp.sendmail(msg["From"], recipients, msg.as_string())
+    except Exception:
+        # Notification failures should not block scraping.
+        pass
 
 
 def _build_location_from_profile(profile: Dict[str, Any]) -> str:
@@ -457,6 +399,7 @@ async def start_lead_scraping_from_strategy(
         task_id,
         request_model,
         current_user["organization_id"],
+        current_user["user_id"],
     )
 
     return {
@@ -475,7 +418,19 @@ async def start_lead_scraping(
 ):
     """Start lead scraping task"""
     try:
-        selected_sources = _normalize_sources(request.sources)
+        location_text = _extract_location_text(request.location)
+        if not location_text:
+            raise HTTPException(status_code=422, detail="location is required")
+
+        normalized_request = LeadScrapingRequest(
+            location=location_text,
+            business_type=request.business_type,
+            radius=request.radius,
+            max_results=request.max_results,
+            sources=request.sources,
+        )
+
+        selected_sources = _normalize_sources(normalized_request.sources)
         if not selected_sources:
             raise HTTPException(status_code=422, detail="At least one valid source is required")
 
@@ -488,10 +443,10 @@ async def start_lead_scraping(
             db_task = LeadScrapeTask(
                 id=task_id,
                 organization_id=current_user["organization_id"],
-                location=request.location,
-                business_type=request.business_type,
-                radius=request.radius,
-                max_results=request.max_results,
+                location=str(normalized_request.location),
+                business_type=normalized_request.business_type,
+                radius=normalized_request.radius,
+                max_results=normalized_request.max_results,
                 requested_sources=selected_sources,
                 status=TaskStatus.RUNNING,
                 total_found=0,
@@ -511,8 +466,9 @@ async def start_lead_scraping(
         background_tasks.add_task(
             _scrape_leads_task,
             task_id,
-            request,
-            current_user["organization_id"]
+            normalized_request,
+            current_user["organization_id"],
+            current_user["user_id"],
         )
 
         return {
@@ -527,7 +483,12 @@ async def start_lead_scraping(
         raise HTTPException(status_code=500, detail=f"Failed to start lead scraping: {str(e)}")
 
 
-async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id: str):
+async def _scrape_leads_task(
+    task_id: str,
+    request: LeadScrapingRequest,
+    org_id: str,
+    user_id: str,
+):
     """Background task for multi-source lead scraping"""
     db = SessionLocal()
     try:
@@ -568,85 +529,119 @@ async def _scrape_leads_task(task_id: str, request: LeadScrapingRequest, org_id:
                 db.rollback()
                 raise
 
-            if source == "github":
-                status, leads, message = await _scrape_github_leads(request)
-                if status == "success":
-                    results[source] = {
-                        "status": "success",
-                        "leads": leads,
-                    }
-                    all_leads.extend(leads)
-                    db_source_run.status = TaskStatus.COMPLETED
-                    db_source_run.leads_count = len(leads)
-                    db_source_run.completed_at = datetime.utcnow()
-                    db_source_run.message = None
-                    lead_rows = []
-                    for lead in leads:
-                        lead_rows.append(
-                            LeadScrapeResult(
-                                id=str(uuid.uuid4()),
-                                task_id=task_id,
-                                organization_id=org_id,
-                                source=_to_lead_source(source),
-                                business_name=lead.get("business_name"),
-                                contact_name=lead.get("contact_name"),
-                                email=lead.get("email"),
-                                phone=lead.get("phone"),
-                                website=lead.get("website"),
-                                address=lead.get("address"),
-                                category=lead.get("category"),
-                                meta_data=lead.get("metadata"),
-                                raw_payload=lead,
-                                created_at=datetime.utcnow(),
-                            )
-                        )
-                    db.add_all(lead_rows)
-                    try:
-                        db.commit()
-                    except Exception:
-                        db.rollback()
-                        raise
-                else:
-                    results[source] = {
-                        "status": "error",
-                        "message": message or "GitHub scraping failed.",
-                    }
-                    db_source_run.status = TaskStatus.FAILED
-                    db_source_run.leads_count = len(leads) if isinstance(leads, list) else 0
-                    db_source_run.message = message or "GitHub scraping failed."
-                    db_source_run.completed_at = datetime.utcnow()
-                    try:
-                        db.commit()
-                    except Exception:
-                        db.rollback()
-                        raise
-                continue
+            source_label = source.replace("_", " ").title()
+            org_context = {
+                "organization_id": org_id,
+                "source": source,
+                "db_session": db,
+            }
 
-            env_var = SOURCE_API_KEY_ENV.get(source)
-            if env_var and not os.getenv(env_var):
-                source_label = source.replace("_", " ").title()
+            provider = get_provider(source)
+            provider_started_at = datetime.utcnow()
+            provider_started_ts = time.perf_counter()
+            if not provider:
+                status = "error"
+                leads = []
+                message = f"{source_label} source is not configured."
+            else:
+                is_configured = provider.validate_config(org_context)
+                if not is_configured:
+                    status = "error"
+                    leads = []
+                    message = "Provider not configured for this organization."
+                else:
+                    status, leads, message = await provider.scrape(request, org_context)
+            provider_duration = max(0.0, time.perf_counter() - provider_started_ts)
+
+            try:
+                db.add(
+                    ApiUsageAuditLog(
+                        id=str(uuid.uuid4()),
+                        organization_id=org_id,
+                        user_id=str(user_id or ""),
+                        provider_name=source,
+                        timestamp=provider_started_at,
+                        duration=provider_duration,
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
+            try:
+                org_row = db.query(Organization).filter(Organization.id == org_id).first()
+                organization_name = org_row.name if org_row else org_id
+                admin_rows = (
+                    db.query(User)
+                    .filter(
+                        User.organization_id == org_id,
+                        User.role == UserRole.ADMIN,
+                        User.is_active == True,  # noqa: E712
+                        User.email.isnot(None),
+                    )
+                    .all()
+                )
+                recipients = [
+                    str(admin.email).strip()
+                    for admin in admin_rows
+                    if str(admin.email or "").strip()
+                ]
+                _send_api_usage_email_alert(
+                    organization_name=organization_name,
+                    recipients=recipients,
+                    user_id=str(user_id or ""),
+                    provider_name=source,
+                    timestamp=provider_started_at,
+                    duration=provider_duration,
+                )
+            except Exception:
+                pass
+
+            if status == "success":
                 results[source] = {
-                    "status": "error",
-                    "message": f"{source_label} not configured. API key missing.",
+                    "status": "success",
+                    "leads": leads,
                 }
-                db_source_run.status = TaskStatus.FAILED
-                db_source_run.leads_count = 0
-                db_source_run.message = f"{source_label} not configured. API key missing."
+                all_leads.extend(leads)
+                db_source_run.status = TaskStatus.COMPLETED
+                db_source_run.leads_count = len(leads)
                 db_source_run.completed_at = datetime.utcnow()
+                db_source_run.message = None
+                lead_rows = []
+                for lead in leads:
+                    lead_rows.append(
+                        LeadScrapeResult(
+                            id=str(uuid.uuid4()),
+                            task_id=task_id,
+                            organization_id=org_id,
+                            source=_to_lead_source(source),
+                            business_name=lead.get("business_name"),
+                            contact_name=lead.get("contact_name"),
+                            email=lead.get("email"),
+                            phone=lead.get("phone"),
+                            website=lead.get("website"),
+                            address=lead.get("address"),
+                            category=lead.get("category"),
+                            meta_data=lead.get("metadata"),
+                            raw_payload=lead,
+                            created_at=datetime.utcnow(),
+                        )
+                    )
+                db.add_all(lead_rows)
                 try:
                     db.commit()
                 except Exception:
                     db.rollback()
                     raise
             else:
-                source_label = source.replace("_", " ").title()
+                failure_message = message or f"{source_label} scraping failed."
                 results[source] = {
                     "status": "error",
-                    "message": f"{source_label} source is not configured.",
+                    "message": failure_message,
                 }
                 db_source_run.status = TaskStatus.FAILED
-                db_source_run.leads_count = 0
-                db_source_run.message = f"{source_label} source is not configured."
+                db_source_run.leads_count = len(leads) if isinstance(leads, list) else 0
+                db_source_run.message = failure_message
                 db_source_run.completed_at = datetime.utcnow()
                 try:
                     db.commit()

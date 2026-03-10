@@ -2,7 +2,7 @@
 # Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
@@ -19,10 +19,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
         "http://localhost:3000",
         "http://localhost:8000",
-        "http://127.0.0.1:5500",
-        "http://localhost:5500"
+        "http://127.0.0.1:3000",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
@@ -93,6 +94,27 @@ def _cors_headers(request: Request) -> dict:
     }
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    headers = _cors_headers(request)
+    if isinstance(exc.headers, dict):
+        headers.update(exc.headers)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=_cors_headers(request),
+    )
+
+
 async def keep_services_warm():
     while True:
         try:
@@ -133,6 +155,7 @@ async def proxy_request(service: str, request: Request, path: str = ""):
     """Proxy requests to appropriate microservice. Path is preserved so that
     /api/auth/org-login reaches the auth service at /api/auth/org-login."""
     resolved_service = SERVICE_ALIASES.get(service, service)
+    upstream_service_path = service if service in SERVICE_ALIASES else resolved_service
 
     if resolved_service == "enrichment":
         service_url = SERVICE_URLS["leads"]
@@ -143,11 +166,13 @@ async def proxy_request(service: str, request: Request, path: str = ""):
 
     # Preserve route shape without forcing a trailing slash when path is empty
     if path:
-        url = f"{service_url}/api/{resolved_service}/{path}"
+        url = f"{service_url}/api/{upstream_service_path}/{path}"
     else:
-        url = f"{service_url}/api/{resolved_service}"
+        url = f"{service_url}/api/{upstream_service_path}"
 
     if request.method == "OPTIONS":
+        print("[Gateway CORS Debug] Preflight request detected")
+        print(f"path=/api/{service}/{path}" if path else f"path=/api/{service}")
         return Response(status_code=200, headers=_cors_headers(request))
 
     # Forward headers
@@ -166,8 +191,11 @@ async def proxy_request(service: str, request: Request, path: str = ""):
     print("[Gateway Routing]")
     print(f"Incoming service={service}")
     print(f"Resolved service={resolved_service}")
+    print(f"Upstream service path={upstream_service_path}")
     print(f"Service URL={service_url}")
     print(f"Forwarding to URL={url}")
+    if service == "admin" and str(path or "").startswith("api-keys"):
+        print("[Gateway Admin Debug] /api/admin/api-keys request detected")
 
     # Get request body if present
     body = None

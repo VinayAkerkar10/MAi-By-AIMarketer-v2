@@ -88,6 +88,15 @@ class ContinentMaster(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     name = Column(String, nullable=False, unique=True, index=True)
 
+
+class BusinessCategoryMaster(Base):
+    __tablename__ = "business_category_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    category_name = Column(String, nullable=False, unique=True, index=True)
+    parent_category = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
 # ===== DATABASE MODELS =====
 
 class Organization(Base):
@@ -112,6 +121,8 @@ class Organization(Base):
     lead_scrape_results = relationship("LeadScrapeResult", back_populates="organization")
     enrichment_tasks = relationship("EnrichmentTask", back_populates="organization")
     enrichment_rows = relationship("EnrichmentRow", back_populates="organization")
+    api_keys = relationship("OrganizationApiKey", back_populates="organization")
+    api_usage_logs = relationship("ApiUsageAuditLog", back_populates="organization")
 
 class User(Base):
     __tablename__ = "users"
@@ -434,6 +445,46 @@ class EnrichmentRow(Base):
         CheckConstraint("row_index >= 0", name="ck_enrichment_row_row_index_non_negative"),
         UniqueConstraint("task_id", "row_index", name="uq_enrichment_row_task_index"),
         Index("ix_enrichment_row_org_task", "organization_id", "task_id"),
+    )
+
+
+class OrganizationApiKey(Base):
+    __tablename__ = "organization_api_keys"
+
+    id = Column(String, primary_key=True, index=True)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider_name = Column(String, nullable=False, index=True)
+    api_key = Column(Text, nullable=False)
+    created_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    status = Column(String, nullable=False, default="active")
+
+    organization = relationship("Organization", back_populates="api_keys")
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider_name", name="uq_org_provider_api_key"),
+        CheckConstraint("status IN ('active','disabled')", name="ck_org_api_key_status"),
+        Index("ix_org_api_keys_org_provider", "organization_id", "provider_name"),
+    )
+
+
+class ApiUsageAuditLog(Base):
+    __tablename__ = "api_usage_audit_logs"
+
+    id = Column(String, primary_key=True, index=True)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    provider_name = Column(String, nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    duration = Column(Float, nullable=False, default=0.0)
+
+    organization = relationship("Organization", back_populates="api_usage_logs")
+
+    __table_args__ = (
+        CheckConstraint("duration >= 0", name="ck_api_usage_duration_non_negative"),
+        Index("ix_api_usage_org_time", "organization_id", "timestamp"),
+        Index("ix_api_usage_org_provider", "organization_id", "provider_name"),
     )
 
 # ===== HELPER FUNCTIONS =====

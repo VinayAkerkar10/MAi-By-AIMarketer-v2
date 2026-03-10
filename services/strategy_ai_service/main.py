@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from shared.database import get_db, Strategy, StrategyVersion, ContinentMaster
+from shared.database import get_db, Strategy, StrategyVersion, ContinentMaster, BusinessCategoryMaster
 from shared.auth import get_current_user, require_feature, FeatureName
 from shared.strategy_providers import StrategyProviderFactory, LLMProviderError
 from shared.config import (
@@ -106,6 +106,29 @@ async def get_continent_master(
             {
                 "id": row.id,
                 "name": row.name,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.get("/api/strategy/master/business-categories", tags=["Master Data"])
+@app.get("/api/master/business-categories", tags=["Master Data"])
+async def get_business_category_master(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    rows = (
+        db.query(BusinessCategoryMaster)
+        .order_by(BusinessCategoryMaster.category_name.asc())
+        .all()
+    )
+    return {
+        "business_categories": [
+            {
+                "id": row.id,
+                "category_name": row.category_name,
+                "parent_category": row.parent_category,
             }
             for row in rows
         ]

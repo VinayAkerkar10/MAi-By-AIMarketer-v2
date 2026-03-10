@@ -1,8 +1,10 @@
 // Global data storage
 let appData = {
+    currentUserRole: null,
     businessProfile: null,
     generatedStrategy: null,
     currentStrategyId: null,
+    adminApiKeys: [],
     scrapedLeads: [],
     enrichedData: [],
     campaigns: [],
@@ -60,6 +62,14 @@ let campaignStrategyOptions = [];
 let campaignStrategyVersionOptions = [];
 let strategyVersionRequestToken = 0;
 let continentMasterOptions = [];
+let businessCategoryMasterOptions = [];
+let leadLocationState = {
+    text: "",
+    lat: null,
+    lng: null,
+    place_id: null,
+};
+let adminApiKeysLoaded = false;
 
 const CONTINENT_COUNTRY_MAP = {
     "Asia": ["India", "Indonesia", "Malaysia", "Singapore", "Thailand", "Vietnam", "Philippines", "Japan", "South Korea", "China"],
@@ -69,6 +79,23 @@ const CONTINENT_COUNTRY_MAP = {
     "North America": ["United States", "Canada", "Mexico"],
     "South America": ["Brazil", "Argentina", "Chile", "Colombia", "Peru"],
 };
+
+const DEFAULT_BUSINESS_CATEGORIES = [
+    "Technology",
+    "Healthcare",
+    "Finance",
+    "Manufacturing",
+    "Professional Services",
+    "Retail",
+    "Education",
+    "Software Development",
+    "Data Analytics",
+    "Cloud Services",
+    "Cybersecurity",
+    "Artificial Intelligence",
+    "Consulting",
+    "Marketing Agency",
+];
 
 function redirectToLogin() {
     const currentPath = window.location.pathname || "";
@@ -382,6 +409,10 @@ async function apiRequest(path, method = "GET", body = null) {
         throw new Error('Network error. Please check backend connectivity.');
     }
 
+    if (response.status === 204) {
+        return { success: true };
+    }
+
     let data = {};
     try {
         data = await response.json();
@@ -513,9 +544,12 @@ document.addEventListener('DOMContentLoaded', function() {
     // Small delay to ensure all elements are rendered
     setTimeout(async () => {
         initializeApp();
+        await loadCurrentUserContext();
+        applyAdminVisibility();
         setupNavigation();
         setupEventListeners();
         await loadContinentMasterData();
+        await loadBusinessCategoryMasterData();
         loadDataFromStorage();
         initializeSampleData();
         
@@ -583,6 +617,47 @@ async function loadContinentMasterData() {
     populateContinentDropdown();
 }
 
+async function loadBusinessCategoryMasterData() {
+    try {
+        const response = await apiRequest('/api/strategy/master/business-categories');
+        const rows = Array.isArray(response?.business_categories) ? response.business_categories : [];
+        businessCategoryMasterOptions = rows
+            .map((row) => String(row?.category_name || '').trim())
+            .filter((name) => name.length > 0);
+    } catch (error) {
+        console.error('Business category master loading error:', error);
+        businessCategoryMasterOptions = [];
+    }
+    populateBusinessCategoryDropdowns();
+}
+
+function populateBusinessCategoryDropdowns() {
+    const options = businessCategoryMasterOptions.length
+        ? businessCategoryMasterOptions
+        : DEFAULT_BUSINESS_CATEGORIES;
+    populateSingleCategoryDropdown('industry', 'Select Industry', options);
+    populateSingleCategoryDropdown('businessType', 'Select Category', options);
+}
+
+function populateSingleCategoryDropdown(selectId, placeholder, options) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+
+    const previousValue = String(select.value || '').trim();
+    select.innerHTML = `<option value="">${placeholder}</option>`;
+
+    options.forEach((name) => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+    });
+
+    if (previousValue && options.includes(previousValue)) {
+        select.value = previousValue;
+    }
+}
+
 function populateContinentDropdown() {
     const continentSelect = document.getElementById('continent');
     if (!continentSelect) return;
@@ -632,6 +707,34 @@ function updateProfileCTAState() {
     ctaBtn.classList.toggle('hidden', !appData.businessProfile);
 }
 
+async function loadCurrentUserContext() {
+    try {
+        const response = await apiRequest('/api/auth/me');
+        const role = String(response?.user?.role || '').trim().toLowerCase();
+        appData.currentUserRole = role || null;
+    } catch (error) {
+        console.error('Failed to load current user context:', error);
+        appData.currentUserRole = null;
+    }
+}
+
+function isAdminUser() {
+    return appData.currentUserRole === 'admin';
+}
+
+function applyAdminVisibility() {
+    const adminTab = document.getElementById('adminApiKeysTab');
+    const adminModule = document.getElementById('admin-api-keys');
+    const canAccessAdmin = isAdminUser();
+
+    if (adminTab) {
+        adminTab.classList.toggle('hidden', !canAccessAdmin);
+    }
+    if (adminModule && !canAccessAdmin) {
+        adminModule.classList.add('hidden');
+    }
+}
+
 async function handleGenerateStrategyFromProfile() {
     if (!appData.businessProfile) {
         showErrorMessage('Please complete your Business Profile first.');
@@ -679,6 +782,11 @@ function handleTabClick(event) {
 
 function showModule(moduleId) {
     console.log('Showing module:', moduleId);
+
+    if (moduleId === 'admin-api-keys' && !isAdminUser()) {
+        showErrorMessage('Admin access required.');
+        return;
+    }
     
     // Hide all modules
     const allModules = document.querySelectorAll('.module');
@@ -714,6 +822,9 @@ function handleModuleSpecialInit(moduleId) {
             break;
         case 'templates':
             populateTemplateLibrary();
+            break;
+        case 'admin-api-keys':
+            loadAdminApiKeys();
             break;
     }
 }
@@ -796,6 +907,7 @@ function setupEventListeners() {
     if (leadScraperForm) {
         leadScraperForm.addEventListener('submit', handleLeadScraping);
     }
+    setupLeadLocationControls();
 
     setupSourceSelectionControls();
 
@@ -847,6 +959,7 @@ function setupEventListeners() {
     }
     updateLogoutButtonVisibility();
     updateProfileCTAState();
+    setupAdminApiKeysListeners();
 
     // Modal close functionality
     document.addEventListener('click', function(e) {
@@ -895,6 +1008,358 @@ function handleBusinessProfileSubmit(e) {
     displayProfileSummary(profile);
     updateProfileCTAState();
     showSuccessMessage('Business profile saved successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
+}
+
+function setupAdminApiKeysListeners() {
+    const addBtn = document.getElementById('adminApiKeyAddBtn');
+    if (addBtn && !addBtn.dataset.bound) {
+        addBtn.addEventListener('click', () => {
+            openAdminApiKeyForm();
+        });
+        addBtn.dataset.bound = '1';
+    }
+
+    const cancelBtn = document.getElementById('adminApiKeyCancelBtn');
+    if (cancelBtn && !cancelBtn.dataset.bound) {
+        cancelBtn.addEventListener('click', () => {
+            closeAdminApiKeyForm();
+        });
+        cancelBtn.dataset.bound = '1';
+    }
+
+    const form = document.getElementById('adminApiKeyForm');
+    if (form && !form.dataset.bound) {
+        form.addEventListener('submit', handleAdminApiKeySubmit);
+        form.dataset.bound = '1';
+    }
+}
+
+function setAdminApiKeysLoading(isLoading) {
+    const loader = document.getElementById('adminApiKeysLoader');
+    if (loader) {
+        loader.classList.toggle('hidden', !isLoading);
+    }
+}
+
+function setAdminApiKeysFeedback(message, type = 'info') {
+    const feedback = document.getElementById('adminApiKeysFeedback');
+    if (!feedback) return;
+    if (!message) {
+        feedback.classList.add('hidden');
+        feedback.textContent = '';
+        feedback.className = 'hidden';
+        return;
+    }
+    feedback.className = `alert alert--${type}`;
+    feedback.textContent = message;
+}
+
+function openAdminApiKeyForm(row = null) {
+    if (!isAdminUser()) return;
+
+    const form = document.getElementById('adminApiKeyForm');
+    const idInput = document.getElementById('adminApiKeyId');
+    const providerInput = document.getElementById('adminProviderName');
+    const statusInput = document.getElementById('adminApiKeyStatus');
+    const apiKeyInput = document.getElementById('adminApiKeyValue');
+    const saveBtn = document.getElementById('adminApiKeySaveBtn');
+    if (!form || !idInput || !providerInput || !statusInput || !apiKeyInput || !saveBtn) return;
+
+    if (row) {
+        idInput.value = row.id || '';
+        providerInput.value = String(row.provider_name || 'github');
+        statusInput.value = String(row.status || 'active');
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = 'Leave blank to keep existing key';
+        saveBtn.textContent = 'Update API Key';
+    } else {
+        idInput.value = '';
+        providerInput.value = 'github';
+        statusInput.value = 'active';
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = 'Enter provider API key';
+        saveBtn.textContent = 'Save API Key';
+    }
+
+    form.classList.remove('hidden');
+}
+
+function closeAdminApiKeyForm() {
+    const form = document.getElementById('adminApiKeyForm');
+    if (form) {
+        form.classList.add('hidden');
+        form.reset();
+    }
+}
+
+function renderAdminApiKeysTable() {
+    const tbody = document.getElementById('adminApiKeysTableBody');
+    if (!tbody) return;
+
+    const rows = Array.isArray(appData.adminApiKeys) ? appData.adminApiKeys : [];
+    if (rows.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6">No API keys configured.</td>
+            </tr>
+        `;
+        return;
+    }
+
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(row.provider_name || '')}</td>
+            <td>${escapeHtml(row.api_key_masked || '')}</td>
+            <td><span class="status ${String(row.status || '').toLowerCase() === 'active' ? 'status--success' : 'status--warning'}">${escapeHtml(row.status || '')}</span></td>
+            <td>${escapeHtml(row.created_by || '')}</td>
+            <td>${escapeHtml(row.updated_at ? new Date(row.updated_at).toLocaleString() : '')}</td>
+            <td style="display:flex; gap:6px; flex-wrap: wrap;">
+                <button class="btn btn--sm btn--secondary admin-api-edit-btn" data-id="${escapeHtml(row.id || '')}">Edit</button>
+                <button class="btn btn--sm btn--outline admin-api-disable-btn" data-id="${escapeHtml(row.id || '')}">Disable</button>
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.querySelectorAll('.admin-api-edit-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            const row = rows.find((item) => String(item.id) === String(button.dataset.id));
+            if (!row) return;
+            openAdminApiKeyForm(row);
+        });
+    });
+
+    tbody.querySelectorAll('.admin-api-disable-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const keyId = String(button.dataset.id || '');
+            if (!keyId) return;
+            const confirmed = window.confirm('Disable this API key?');
+            if (!confirmed) return;
+            await disableAdminApiKey(keyId);
+        });
+    });
+}
+
+async function loadAdminApiKeys(force = false) {
+    if (!isAdminUser()) return;
+    if (adminApiKeysLoaded && !force) {
+        renderAdminApiKeysTable();
+        return;
+    }
+
+    setAdminApiKeysLoading(true);
+    setAdminApiKeysFeedback('', 'info');
+    try {
+        const response = await apiRequest('/api/admin/api-keys', 'GET');
+        appData.adminApiKeys = Array.isArray(response?.api_keys) ? response.api_keys : [];
+        adminApiKeysLoaded = true;
+        renderAdminApiKeysTable();
+    } catch (error) {
+        console.error('Failed to load admin API keys:', error);
+        setAdminApiKeysFeedback(error.message || 'Failed to load API keys.', 'error');
+    } finally {
+        setAdminApiKeysLoading(false);
+    }
+}
+
+async function handleAdminApiKeySubmit(event) {
+    event.preventDefault();
+    if (!isAdminUser()) return;
+
+    const idInput = document.getElementById('adminApiKeyId');
+    const providerInput = document.getElementById('adminProviderName');
+    const statusInput = document.getElementById('adminApiKeyStatus');
+    const apiKeyInput = document.getElementById('adminApiKeyValue');
+
+    const keyId = String(idInput?.value || '').trim();
+    const providerName = String(providerInput?.value || '').trim();
+    const status = String(statusInput?.value || 'active').trim();
+    const apiKey = String(apiKeyInput?.value || '');
+
+    if (!providerName) {
+        setAdminApiKeysFeedback('Provider is required.', 'error');
+        return;
+    }
+
+    if (!keyId && !apiKey.trim()) {
+        setAdminApiKeysFeedback('API key is required.', 'error');
+        return;
+    }
+
+    const payload = {
+        provider_name: providerName,
+        api_key: apiKey,
+        status,
+    };
+
+    try {
+        if (keyId) {
+            await apiRequest(`/api/admin/api-keys/${encodeURIComponent(keyId)}`, 'PUT', payload);
+            setAdminApiKeysFeedback('API key updated successfully.', 'success');
+            showSuccessMessage('API key updated successfully.');
+        } else {
+            await apiRequest('/api/admin/api-keys', 'POST', payload);
+            setAdminApiKeysFeedback('API key created successfully.', 'success');
+            showSuccessMessage('API key created successfully.');
+        }
+        closeAdminApiKeyForm();
+        await loadAdminApiKeys(true);
+    } catch (error) {
+        console.error('Failed to save admin API key:', error);
+        setAdminApiKeysFeedback(error.message || 'Failed to save API key.', 'error');
+        showErrorMessage(error.message || 'Failed to save API key.');
+    }
+}
+
+async function disableAdminApiKey(keyId) {
+    try {
+        const response = await apiRequest(`/api/admin/api-keys/${encodeURIComponent(keyId)}`, 'DELETE');
+        console.log("Disable API response:", response);
+
+        if (response && response.success) {
+            const message = response.message || 'API key disabled successfully';
+            setAdminApiKeysFeedback(message, 'success');
+            showSuccessMessage(message);
+            await loadAdminApiKeys(true);
+        } else {
+            setAdminApiKeysFeedback('Failed to disable API key', 'error');
+            showErrorMessage('Failed to disable API key');
+        }
+    } catch (error) {
+        console.error('Failed to disable API key:', error);
+        setAdminApiKeysFeedback(error.message || 'Failed to disable API key.', 'error');
+        showErrorMessage(error.message || 'Failed to disable API key.');
+    }
+}
+
+function setupLeadLocationControls() {
+    const locationInput = document.getElementById('location');
+    const useCurrentLocationBtn = document.getElementById('useCurrentLocationBtn');
+    const suggestionsContainer = document.getElementById('locationSuggestions');
+
+    if (locationInput && !locationInput.dataset.bound) {
+        locationInput.addEventListener('input', function () {
+            const nextText = String(this.value || '').trim();
+            leadLocationState = {
+                text: nextText,
+                lat: null,
+                lng: null,
+                place_id: null,
+            };
+            renderLocationSuggestions([]);
+        });
+        locationInput.dataset.bound = '1';
+    }
+
+    if (useCurrentLocationBtn && !useCurrentLocationBtn.dataset.bound) {
+        useCurrentLocationBtn.addEventListener('click', handleUseCurrentLocation);
+        useCurrentLocationBtn.dataset.bound = '1';
+    }
+
+    if (suggestionsContainer) {
+        renderLocationSuggestions([]);
+    }
+}
+
+function renderLocationSuggestions(suggestions = []) {
+    const container = document.getElementById('locationSuggestions');
+    if (!container) return;
+
+    const safeSuggestions = Array.isArray(suggestions) ? suggestions : [];
+    if (safeSuggestions.length === 0) {
+        container.innerHTML = '';
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.innerHTML = safeSuggestions
+        .map((item) => `<div class="suggestion-item" style="padding: 6px 0;">${item}</div>`)
+        .join('');
+    container.classList.remove('hidden');
+}
+
+function handleUseCurrentLocation() {
+    if (!navigator.geolocation) {
+        showErrorMessage('Geolocation is not supported by this browser.');
+        return;
+    }
+
+    const btn = document.getElementById('useCurrentLocationBtn');
+    const locationInput = document.getElementById('location');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Detecting...';
+    }
+
+    const finalizeButton = () => {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Use Current Location';
+        }
+    };
+
+    navigator.geolocation.getCurrentPosition(
+        (position) => {
+            const lat = Number(position?.coords?.latitude);
+            const lng = Number(position?.coords?.longitude);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                showErrorMessage('Unable to read your current location coordinates.');
+                finalizeButton();
+                return;
+            }
+
+            const text = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+            leadLocationState = {
+                text,
+                lat,
+                lng,
+                place_id: null,
+            };
+            if (locationInput) {
+                locationInput.value = text;
+            }
+            renderLocationSuggestions([]);
+            showSuccessMessage('Current location detected.');
+            finalizeButton();
+        },
+        (error) => {
+            const message = error?.message || 'Unable to detect current location.';
+            showErrorMessage(message);
+            finalizeButton();
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 60000,
+        }
+    );
+}
+
+function getStructuredLocationPayload() {
+    const locationInput = document.getElementById('location');
+    const text = String(locationInput?.value || leadLocationState.text || '').trim();
+
+    if (text !== String(leadLocationState.text || '').trim()) {
+        return {
+            text,
+            lat: null,
+            lng: null,
+            place_id: null,
+        };
+    }
+
+    return {
+        text,
+        lat: leadLocationState.lat,
+        lng: leadLocationState.lng,
+        place_id: leadLocationState.place_id,
+    };
 }
 
 function displayProfileSummary(profile) {
@@ -1449,11 +1914,16 @@ function handleLeadScraping(e) {
     e.preventDefault();
     console.log('Lead scraping form submitted');
     
-    const location = document.getElementById('location').value;
+    const location = getStructuredLocationPayload();
     const businessType = document.getElementById('businessType').value;
     const radius = document.getElementById('radius').value;
     const additionalFilters = document.getElementById('additionalFilters').value;
     const sources = getNormalizedSelectedSources();
+
+    if (!String(location?.text || '').trim()) {
+        showErrorMessage('Location is required.');
+        return;
+    }
 
     if (sources.length === 0) {
         showErrorMessage('Please select at least one source.');
@@ -2737,6 +3207,14 @@ function loadDataFromStorage() {
                 const continentSelect = document.getElementById('continent');
                 if (continentSelect && appData.businessProfile.continent) {
                     continentSelect.value = appData.businessProfile.continent;
+                }
+                const industrySelect = document.getElementById('industry');
+                if (industrySelect && appData.businessProfile.industry) {
+                    industrySelect.value = appData.businessProfile.industry;
+                }
+                const businessTypeSelect = document.getElementById('businessType');
+                if (businessTypeSelect && appData.businessProfile.industry) {
+                    businessTypeSelect.value = appData.businessProfile.industry;
                 }
                 populateCountryDropdown(appData.businessProfile.continent, appData.businessProfile.country);
                 const regionInput = document.getElementById('region');

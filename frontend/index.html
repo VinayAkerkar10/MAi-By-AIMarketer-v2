@@ -30,11 +30,12 @@
             <div class="nav__tabs">
                 <button class="nav__tab nav__tab--active" data-module="business-profile">Business Profile</button>
                 <button class="nav__tab" data-module="strategy-generator">AI Strategy Generator</button>
-                <button class="nav__tab" data-module="lead-scraper">Google Maps Lead Scraper</button>
+                <button class="nav__tab" data-module="lead-scraper">Lead Scraper</button>
                 <button class="nav__tab" data-module="data-enrichment">Customer Data Enrichment</button>
                 <button class="nav__tab" data-module="campaign-manager">Multi-Channel Campaign Manager</button>
                 <button class="nav__tab" data-module="analytics">Analytics & Reporting</button>
                 <button class="nav__tab" data-module="templates">Template Library</button>
+                <button class="nav__tab hidden" data-module="admin-api-keys" id="adminApiKeysTab">API Key Management</button>
             </div>
         </div>
     </nav>
@@ -62,13 +63,6 @@
                                     <label class="form-label" for="industry">Industry</label>
                                     <select class="form-control" id="industry" required>
                                         <option value="">Select Industry</option>
-                                        <option value="Technology">Technology</option>
-                                        <option value="Healthcare">Healthcare</option>
-                                        <option value="Finance">Finance</option>
-                                        <option value="Manufacturing">Manufacturing</option>
-                                        <option value="Professional Services">Professional Services</option>
-                                        <option value="Retail">Retail</option>
-                                        <option value="Education">Education</option>
                                     </select>
                                 </div>
                                 
@@ -231,10 +225,10 @@
                 </div>
             </div>
 
-            <!-- Module 3: Google Maps Lead Scraper -->
+            <!-- Module 3: Lead Scraper -->
             <div class="module hidden" id="lead-scraper">
                 <div class="module__header">
-                    <h2>Google Maps Lead Scraper</h2>
+                    <h2>Lead Scraper</h2>
                     <p>Find potential B2B leads in your target market</p>
                 </div>
                 
@@ -247,20 +241,17 @@
                             <form id="leadScraperForm">
                                 <div class="form-group">
                                     <label class="form-label" for="location">Location</label>
-                                    <input type="text" class="form-control" id="location" placeholder="e.g., San Francisco, CA" required>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <input type="text" class="form-control" id="location" placeholder="e.g., San Francisco, CA" autocomplete="off" required>
+                                        <button type="button" class="btn btn--secondary btn--sm" id="useCurrentLocationBtn">Use Current Location</button>
+                                    </div>
+                                    <div id="locationSuggestions" class="hidden" style="margin-top: 6px; border: 1px solid #ddd; border-radius: 8px; padding: 8px; background: #fff;"></div>
                                 </div>
                                 
                                 <div class="form-group">
                                     <label class="form-label" for="businessType">Business Type/Category</label>
                                     <select class="form-control" id="businessType" required>
                                         <option value="">Select Category</option>
-                                        <option value="Software Development">Software Development</option>
-                                        <option value="Data Analytics">Data Analytics</option>
-                                        <option value="Cloud Services">Cloud Services</option>
-                                        <option value="Cybersecurity">Cybersecurity</option>
-                                        <option value="Artificial Intelligence">Artificial Intelligence</option>
-                                        <option value="Consulting">Consulting</option>
-                                        <option value="Marketing Agency">Marketing Agency</option>
                                     </select>
                                 </div>
                                 
@@ -684,6 +675,79 @@
                 
                 <div class="templates-grid" id="templatesGrid">
                     <!-- Templates will be populated here -->
+                </div>
+            </div>
+
+            <!-- Module 8: Admin API Key Management -->
+            <div class="module hidden" id="admin-api-keys">
+                <div class="module__header">
+                    <h2>API Key Management</h2>
+                    <p>Manage organization provider API keys (Admin only)</p>
+                </div>
+
+                <div class="card">
+                    <div class="card__header" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                        <h3>Configured Provider Keys</h3>
+                        <button class="btn btn--primary btn--sm" id="adminApiKeyAddBtn">Add API Key</button>
+                    </div>
+                    <div class="card__body">
+                        <div id="adminApiKeysLoader" class="hidden" style="margin-bottom: 12px;">
+                            <div class="loading-spinner"></div>
+                            <p>Loading API keys...</p>
+                        </div>
+
+                        <div id="adminApiKeysFeedback" class="hidden" style="margin-bottom: 12px;"></div>
+
+                        <form id="adminApiKeyForm" class="hidden" style="margin-bottom: 16px;">
+                            <input type="hidden" id="adminApiKeyId">
+                            <div class="grid grid--two-col">
+                                <div class="form-group">
+                                    <label class="form-label" for="adminProviderName">Provider</label>
+                                    <select class="form-control" id="adminProviderName" required>
+                                        <option value="github">github</option>
+                                        <option value="google_maps">google_maps</option>
+                                        <option value="linkedin">linkedin</option>
+                                        <option value="volza">volza</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="adminApiKeyStatus">Status</label>
+                                    <select class="form-control" id="adminApiKeyStatus" required>
+                                        <option value="active">active</option>
+                                        <option value="disabled">disabled</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="adminApiKeyValue">API Key</label>
+                                <input type="password" class="form-control" id="adminApiKeyValue" placeholder="Enter provider API key">
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="submit" class="btn btn--primary" id="adminApiKeySaveBtn">Save API Key</button>
+                                <button type="button" class="btn btn--secondary" id="adminApiKeyCancelBtn">Cancel</button>
+                            </div>
+                        </form>
+
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Provider</th>
+                                        <th>API Key</th>
+                                        <th>Status</th>
+                                        <th>Created By</th>
+                                        <th>Updated At</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="adminApiKeysTableBody">
+                                    <tr>
+                                        <td colspan="6">No API keys configured.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -10,22 +10,26 @@ from sqlalchemy.orm import Session
 import uuid
 import sys
 import os
+import logging
 
 # Add parent directory to path for shared imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.database import (
-    get_db, Organization, User, License, UserRole, LicenseStatus, LicenseType, LicensePeriod
+    get_db, Organization, User, License, UserRole, LicenseStatus, LicenseType, LicensePeriod, OrganizationApiKey
 )
 from shared.auth import (
     get_password_hash, verify_password, create_access_token, get_current_user, get_current_admin
 )
+from shared.api_keys import encrypt_api_key, decrypt_api_key, mask_api_key
 
 app = FastAPI(
     title="MAi Auth & Organization Service",
     description="Authentication and Organization Management - Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.",
     version="1.0.0"
 )
+
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +62,12 @@ class AssignLicenseRequest(BaseModel):
     license_type: LicenseType = Field(..., description="License type")
     period: LicensePeriod = Field(..., description="License period")
     max_users: int = Field(1, description="Maximum users allowed")
+
+
+class OrgApiKeyRequest(BaseModel):
+    provider_name: str = Field(..., description="Provider name")
+    api_key: Optional[str] = Field(None, description="Provider API key")
+    status: Optional[str] = Field("active", description="active or disabled")
 
 # ===== AUTHENTICATION ENDPOINTS =====
 
@@ -475,6 +485,218 @@ async def list_licenses(
             }
             for lic in licenses
         ]
+    }
+
+
+# ===== API KEY MANAGEMENT (Organization Admin) =====
+
+def _normalize_provider_name(provider_name: str) -> str:
+    return str(provider_name or "").strip().lower()
+
+
+def _normalize_api_key_status(status_value: Optional[str]) -> str:
+    value = str(status_value or "active").strip().lower()
+    return "disabled" if value == "disabled" else "active"
+
+
+@app.get("/api/admin/api-keys", tags=["Admin - API Keys"])
+async def list_org_api_keys(
+    current_admin: Dict[str, Any] = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    org_id = current_admin["organization_id"]
+    rows = (
+        db.query(OrganizationApiKey)
+        .filter(OrganizationApiKey.organization_id == org_id)
+        .order_by(OrganizationApiKey.provider_name.asc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "api_keys": [
+            {
+                "id": row.id,
+                "organization_id": row.organization_id,
+                "provider_name": row.provider_name,
+                "api_key_masked": mask_api_key(decrypt_api_key(row.api_key)),
+                "created_by": row.created_by,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "status": row.status,
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.post("/api/admin/api-keys", tags=["Admin - API Keys"])
+async def create_org_api_key(
+    payload: OrgApiKeyRequest,
+    current_admin: Dict[str, Any] = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    org_id = current_admin["organization_id"]
+    provider_name = _normalize_provider_name(payload.provider_name)
+    if not provider_name:
+        raise HTTPException(status_code=422, detail="provider_name is required")
+    if not str(payload.api_key or "").strip():
+        raise HTTPException(status_code=422, detail="api_key is required")
+
+    existing = (
+        db.query(OrganizationApiKey)
+        .filter(
+            OrganizationApiKey.organization_id == org_id,
+            OrganizationApiKey.provider_name == provider_name,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="API key already configured for provider")
+
+    now = datetime.utcnow()
+    row = OrganizationApiKey(
+        id=str(uuid.uuid4()),
+        organization_id=org_id,
+        provider_name=provider_name,
+        api_key=encrypt_api_key(payload.api_key),
+        created_by=current_admin["user_id"],
+        created_at=now,
+        updated_at=now,
+        status=_normalize_api_key_status(payload.status),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "success": True,
+        "message": "API key created successfully",
+        "api_key": {
+            "id": row.id,
+            "organization_id": row.organization_id,
+            "provider_name": row.provider_name,
+            "api_key_masked": mask_api_key(decrypt_api_key(row.api_key)),
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "status": row.status,
+        },
+    }
+
+
+@app.put("/api/admin/api-keys/{key_id}", tags=["Admin - API Keys"])
+async def update_org_api_key(
+    key_id: str,
+    payload: OrgApiKeyRequest,
+    current_admin: Dict[str, Any] = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    org_id = current_admin["organization_id"]
+    fields_set = getattr(payload, "__fields_set__", set())
+    row = (
+        db.query(OrganizationApiKey)
+        .filter(
+            OrganizationApiKey.id == key_id,
+            OrganizationApiKey.organization_id == org_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    provider_name = _normalize_provider_name(payload.provider_name)
+    if not provider_name:
+        raise HTTPException(status_code=422, detail="provider_name is required")
+    if provider_name != row.provider_name:
+        conflict = (
+            db.query(OrganizationApiKey)
+            .filter(
+                OrganizationApiKey.organization_id == org_id,
+                OrganizationApiKey.provider_name == provider_name,
+                OrganizationApiKey.id != key_id,
+            )
+            .first()
+        )
+        if conflict:
+            raise HTTPException(status_code=409, detail="API key already configured for provider")
+        row.provider_name = provider_name
+
+    new_api_key_value = str(payload.api_key or "").strip()
+    had_disabled_status = row.status == "disabled"
+    if new_api_key_value:
+        row.api_key = encrypt_api_key(payload.api_key)
+        row.status = "active"
+        if had_disabled_status:
+            logger.info("[Auth Admin Debug] API key reactivated")
+    elif "status" in fields_set:
+        row.status = _normalize_api_key_status(payload.status)
+
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    logger.info("[Auth Admin Debug] API key updated")
+
+    return {
+        "success": True,
+        "message": "API key updated successfully",
+        "api_key": {
+            "id": row.id,
+            "organization_id": row.organization_id,
+            "provider_name": row.provider_name,
+            "api_key_masked": mask_api_key(decrypt_api_key(row.api_key)),
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "status": row.status,
+        },
+    }
+
+
+@app.delete("/api/admin/api-keys/{key_id}", tags=["Admin - API Keys"])
+async def disable_org_api_key(
+    key_id: str,
+    current_admin: Dict[str, Any] = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    org_id = current_admin["organization_id"]
+    row = (
+        db.query(OrganizationApiKey)
+        .filter(
+            OrganizationApiKey.id == key_id,
+            OrganizationApiKey.organization_id == org_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    if row.status == "disabled":
+        logger.info("[Auth Admin Debug] API key already disabled")
+        return {
+            "success": True,
+            "message": "API key already disabled",
+            "api_key": {
+                "id": row.id,
+                "provider_name": row.provider_name,
+                "status": row.status,
+            },
+        }
+
+    row.status = "disabled"
+    row.updated_at = datetime.utcnow()
+    provider = row.provider_name
+    db.commit()
+    logger.info("[Auth Admin Debug] API key disabled successfully")
+
+    return {
+        "success": True,
+        "message": "API key disabled successfully",
+        "api_key": {
+            "id": key_id,
+            "provider_name": provider,
+            "status": "disabled",
+        },
     }
 
 @app.get("/api/health", tags=["Health"])
