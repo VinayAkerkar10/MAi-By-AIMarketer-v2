@@ -1137,19 +1137,31 @@ select.form-control {
 }
 
 /* Comparison Tables */
-.comparison-tables {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.results-comparison-container {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-24);
+  align-items: flex-start;
 }
 
-@media (max-width: 768px) {
-  .comparison-tables {
-    grid-template-columns: 1fr;
+.result-table {
+  flex: 1 1 500px;
+  min-width: 400px;
+}
+
+.result-table .table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 860px) {
+  .result-table {
+    min-width: 100%;
+    flex-basis: 100%;
   }
 }
 
-.comparison-section h4 {
+.result-table h4 {
   font-size: var(--font-size-lg);
   margin-bottom: var(--space-16);
   color: var(--color-text);

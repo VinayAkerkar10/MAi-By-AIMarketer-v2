@@ -1,7 +1,7 @@
 # MAi Lead Enrichment Service
 # Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Union
@@ -13,6 +13,7 @@ import pandas as pd
 import io
 import sys
 import os
+import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -264,6 +265,39 @@ def _extract_location_text(location_value: Union[str, Dict[str, Any]]) -> str:
         text = str(location_value.get("text") or "").strip()
         return text
     return str(location_value or "").strip()
+
+
+def _apply_column_mapping_to_rows(
+    rows: List[Dict[str, Any]],
+    mapping: Optional[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    if not mapping:
+        return rows
+
+    normalized_mapping: Dict[str, str] = {}
+    for src, dst in mapping.items():
+        src_key = str(src or "").strip()
+        dst_key = str(dst or "").strip()
+        if src_key and dst_key and dst_key.lower() != "none":
+            normalized_mapping[src_key] = dst_key
+
+    if not normalized_mapping:
+        return rows
+
+    transformed_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            transformed_rows.append(row)
+            continue
+
+        # Preserve original keys for backward compatibility, while adding canonical mapped keys.
+        mapped_row = dict(row)
+        for src_key, dst_key in normalized_mapping.items():
+            if src_key in row:
+                mapped_row[dst_key] = row.get(src_key)
+        transformed_rows.append(mapped_row)
+
+    return transformed_rows
 
 
 def _send_api_usage_email_alert(
@@ -809,6 +843,7 @@ async def get_scraped_leads(
 @app.post("/api/enrichment/upload", tags=["Data Enrichment"])
 async def upload_customer_data(
     file: UploadFile = File(...),
+    column_mapping: Optional[str] = Form(None),
     background_tasks: BackgroundTasks = None,
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
     db: Session = Depends(get_db)
@@ -825,8 +860,19 @@ async def upload_customer_data(
         else:
             df = pd.read_excel(io.BytesIO(contents))
         
+        parsed_mapping: Optional[Dict[str, str]] = None
+        if column_mapping:
+            try:
+                candidate_mapping = json.loads(column_mapping)
+            except Exception:
+                raise HTTPException(status_code=422, detail="Invalid column_mapping JSON")
+            if not isinstance(candidate_mapping, dict):
+                raise HTTPException(status_code=422, detail="column_mapping must be a JSON object")
+            parsed_mapping = {str(k): str(v) for k, v in candidate_mapping.items()}
+
         task_id = str(uuid.uuid4())
         original_rows = df.to_dict('records')
+        original_rows = _apply_column_mapping_to_rows(original_rows, parsed_mapping)
         
         # Record usage
         _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
@@ -866,6 +912,29 @@ async def upload_customer_data(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to upload customer data: {str(e)}")
+
+
+@app.post("/api/enrichment/preview-csv", tags=["Data Enrichment"])
+async def preview_csv_columns(
+    file: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+):
+    if not file.filename.endswith(('.csv', '.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+    try:
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(file.file, nrows=5)
+        else:
+            df = pd.read_excel(file.file, nrows=5)
+
+        df = df.where(pd.notna(df), None)
+        return {
+            "columns": [str(column) for column in list(df.columns)],
+            "preview": df.to_dict("records"),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file preview: {str(exc)}")
 
 async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], org_id: str):
     """Background task for customer data enrichment"""

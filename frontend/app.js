@@ -70,6 +70,11 @@ let leadLocationState = {
     place_id: null,
 };
 let adminApiKeysLoaded = false;
+let enrichmentPreviewState = {
+    columns: [],
+    preview: [],
+    mapping: {}
+};
 
 const CONTINENT_COUNTRY_MAP = {
     "Asia": ["India", "Indonesia", "Malaysia", "Singapore", "Thailand", "Vietnam", "Philippines", "Japan", "South Korea", "China"],
@@ -2194,7 +2199,7 @@ function setupDragAndDrop(area) {
     });
 }
 
-function handleFileUpload(e) {
+async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
     
@@ -2204,35 +2209,123 @@ function handleFileUpload(e) {
     
     if (step1) step1.classList.add('hidden');
     if (step2) step2.classList.remove('hidden');
-    
-    // Simulate file parsing and show column mapping
-    setTimeout(() => {
-        displayColumnMapping(['Company Name', 'Email', 'Phone', 'Industry']);
-    }, 500);
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await apiRequestWithOptions('/api/enrichment/preview-csv', {
+            method: 'POST',
+            body: formData,
+            isFormData: true
+        });
+
+        const columns = Array.isArray(response?.columns) ? response.columns : [];
+        const previewRows = Array.isArray(response?.preview) ? response.preview : [];
+
+        enrichmentPreviewState.columns = columns;
+        enrichmentPreviewState.preview = previewRows;
+        enrichmentPreviewState.mapping = {};
+
+        displayColumnMapping(columns);
+    } catch (error) {
+        console.error('CSV preview error:', error);
+        showErrorMessage(error.message || 'Failed to preview CSV. Using fallback mapping.');
+        enrichmentPreviewState.columns = ['Company Name', 'Email', 'Phone', 'Industry'];
+        enrichmentPreviewState.preview = [];
+        enrichmentPreviewState.mapping = {};
+        displayColumnMapping(enrichmentPreviewState.columns);
+    }
 }
 
 function displayColumnMapping(columns) {
     const mappingDiv = document.getElementById('columnMapping');
     if (!mappingDiv) return;
-    
+
+    const targets = ['company_name', 'email', 'phone', 'industry', 'website', 'none'];
+    const suggestTarget = (columnName) => {
+        const key = String(columnName || '').trim().toLowerCase();
+        if (!key) return 'none';
+        if (key.includes('email')) return 'email';
+        if (key.includes('phone') || key.includes('mobile') || key.includes('tel')) return 'phone';
+        if (key.includes('industry') || key.includes('category') || key.includes('sector')) return 'industry';
+        if (key.includes('website') || key.includes('url') || key.includes('site')) return 'website';
+        if (key.includes('company') || key.includes('business') || key === 'name' || key.includes('organization')) return 'company_name';
+        return 'none';
+    };
+
+    const previewRows = Array.isArray(enrichmentPreviewState.preview)
+        ? enrichmentPreviewState.preview.slice(0, 2)
+        : [];
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    const previewText = (columnName) => {
+        if (!previewRows.length) return '-';
+        const values = previewRows
+            .map((row) => row?.[columnName])
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => value.length > 0);
+        return values.length ? values.join(' | ') : '-';
+    };
+
     mappingDiv.innerHTML = `
         <div class="column-mapping">
-            <h4>Map your data columns:</h4>
-            ${columns.map(col => `
-                <div class="mapping-row" style="margin-bottom: 16px;">
-                    <label style="display: block; margin-bottom: 4px;">${col}:</label>
-                    <select class="form-control">
-                        <option value="${col.toLowerCase().replace(' ', '_')}">${col}</option>
-                        <option value="name">Name</option>
-                        <option value="email">Email</option>
-                        <option value="phone">Phone</option>
-                        <option value="company">Company</option>
-                        <option value="skip">Skip this column</option>
-                    </select>
-                </div>
-            `).join('')}
+            <h4>Map CSV columns to system fields:</h4>
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>File Label</th>
+                            <th>Field Mapping</th>
+                            <th>Preview Data</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${columns.map((col) => `
+                            <tr>
+                                <td>${escapeHtml(col)}</td>
+                                <td style="min-width: 180px;">
+                                    <select class="form-control enrichment-column-mapping" data-source-column="${escapeHtml(col)}">
+                                        ${targets.map((target) => `
+                                            <option value="${target}" ${suggestTarget(col) === target ? 'selected' : ''}>${target}</option>
+                                        `).join('')}
+                                    </select>
+                                </td>
+                                <td>${escapeHtml(previewText(col))}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
         </div>
     `;
+
+    const mappingSelects = mappingDiv.querySelectorAll('.enrichment-column-mapping');
+    mappingSelects.forEach((select) => {
+        const sourceColumn = String(select.getAttribute('data-source-column') || '');
+        if (!sourceColumn) return;
+        enrichmentPreviewState.mapping[sourceColumn] = String(select.value || 'none');
+        select.addEventListener('change', function () {
+            enrichmentPreviewState.mapping[sourceColumn] = String(this.value || 'none');
+        });
+    });
+}
+
+function collectColumnMappingSelections() {
+    const mapping = {};
+    const selects = document.querySelectorAll('.enrichment-column-mapping');
+    selects.forEach((select) => {
+        const sourceColumn = String(select.getAttribute('data-source-column') || '').trim();
+        const target = String(select.value || '').trim();
+        if (sourceColumn && target && target.toLowerCase() !== 'none') {
+            mapping[sourceColumn] = target;
+        }
+    });
+    return mapping;
 }
 
 async function pollEnrichmentTask(taskId, onProcessing) {
@@ -2281,8 +2374,10 @@ async function startDataEnrichment() {
     if (progressText) progressText.textContent = '10%';
 
     try {
+        const selectedMapping = collectColumnMappingSelections();
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('column_mapping', JSON.stringify(selectedMapping));
 
         const uploadResponse = await apiRequestWithOptions('/api/enrichment/upload', {
             method: 'POST',
