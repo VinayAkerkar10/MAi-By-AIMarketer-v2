@@ -1355,6 +1355,44 @@ select.form-control {
 .campaign-card__actions {
   display: flex;
   gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.campaign-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-12);
+}
+
+.strategy-execution-actions {
+  display: flex;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.status--draft {
+  background: rgba(100, 116, 139, 0.15);
+  color: #334155;
+}
+
+.status--scheduled {
+  background: rgba(2, 132, 199, 0.15);
+  color: #075985;
+}
+
+.status--active {
+  background: rgba(16, 185, 129, 0.16);
+  color: #065f46;
+}
+
+.status--paused {
+  background: rgba(245, 158, 11, 0.16);
+  color: #92400e;
+}
+
+.status--stopped {
+  background: rgba(239, 68, 68, 0.16);
+  color: #991b1b;
 }
 
 /* Template Cards */

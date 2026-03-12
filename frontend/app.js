@@ -4,6 +4,7 @@ let appData = {
     businessProfile: null,
     generatedStrategy: null,
     currentStrategyId: null,
+    reviewCampaignId: null,
     adminApiKeys: [],
     scrapedLeads: [],
     enrichedData: [],
@@ -63,6 +64,9 @@ let campaignStrategyVersionOptions = [];
 let strategyVersionRequestToken = 0;
 let continentMasterOptions = [];
 let businessCategoryMasterOptions = [];
+let isCreateCampaignInFlight = false;
+let currentEditingCampaignId = null;
+let currentEditingCampaignBudget = null;
 let leadLocationState = {
     text: "",
     lat: null,
@@ -905,6 +909,12 @@ function setupEventListeners() {
     if (generateLeadsFromStrategyBtn && !generateLeadsFromStrategyBtn.dataset.bound) {
         generateLeadsFromStrategyBtn.addEventListener('click', generateLeadsFromStrategy);
         generateLeadsFromStrategyBtn.dataset.bound = '1';
+    }
+
+    const launchStrategyCampaignBtn = document.getElementById('launchStrategyCampaignBtn');
+    if (launchStrategyCampaignBtn && !launchStrategyCampaignBtn.dataset.bound) {
+        launchStrategyCampaignBtn.addEventListener('click', launchStrategyReviewCampaign);
+        launchStrategyCampaignBtn.dataset.bound = '1';
     }
 
     // Lead Scraper Form
@@ -1789,6 +1799,13 @@ function setStrategyExecutionStatus(message, isError = false) {
     statusEl.innerHTML = `<span class="${isError ? 'status status--error' : 'status status--success'}">${message}</span>`;
 }
 
+function updateStrategyLaunchButtonState() {
+    const launchBtn = document.getElementById('launchStrategyCampaignBtn');
+    if (!launchBtn) return;
+    const hasCampaign = typeof appData.reviewCampaignId === 'string' && appData.reviewCampaignId.trim();
+    launchBtn.disabled = !hasCampaign;
+}
+
 async function createCampaignFromStrategy() {
     const strategyId = getCurrentStrategyId();
     if (!strategyId) {
@@ -1803,11 +1820,35 @@ async function createCampaignFromStrategy() {
         });
         await loadCampaigns();
         const campaignId = response?.campaign_id || 'unknown';
+        appData.reviewCampaignId = (response?.campaign_id && String(response.campaign_id).trim()) ? String(response.campaign_id).trim() : null;
+        saveDataToStorage();
+        updateStrategyLaunchButtonState();
+        showCampaignTab('active');
+        setActiveCampaignTab(document.querySelector('[data-tab="active"]'));
         setStrategyExecutionStatus(`Campaign created from strategy (ID: ${campaignId}).`);
-        showSuccessMessage(response?.message || 'Campaign created from strategy.');
+        showSuccessMessage('Campaign created. Review and launch when ready.');
     } catch (error) {
+        appData.reviewCampaignId = null;
+        updateStrategyLaunchButtonState();
         setStrategyExecutionStatus(error.message || 'Failed to create campaign from strategy.', true);
         showErrorMessage(error.message || 'Failed to create campaign from strategy.');
+    }
+}
+
+async function launchStrategyReviewCampaign() {
+    const campaignId = String(appData.reviewCampaignId || '').trim();
+    if (!campaignId) {
+        setStrategyExecutionStatus('No review campaign available to launch yet.', true);
+        return;
+    }
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/launch`, 'POST', {});
+        await loadCampaigns();
+        setStrategyExecutionStatus(`Campaign launched (ID: ${campaignId}).`);
+        showSuccessMessage(response?.message || 'Campaign launched successfully.');
+    } catch (error) {
+        setStrategyExecutionStatus(error.message || 'Failed to launch campaign.', true);
+        showErrorMessage(error.message || 'Failed to launch campaign.');
     }
 }
 
@@ -2692,12 +2733,20 @@ async function loadCampaigns() {
     try {
         const response = await apiRequest('/api/campaigns');
         appData.campaigns = Array.isArray(response?.campaigns) ? response.campaigns : [];
+        if (appData.reviewCampaignId) {
+            const exists = appData.campaigns.some(
+                (c) => String(c?.campaign_id || c?.id || '') === String(appData.reviewCampaignId)
+            );
+            if (!exists) {
+                appData.reviewCampaignId = null;
+            }
+        }
         saveDataToStorage();
     } catch (error) {
         console.error('Campaign loading error:', error);
         appData.campaigns = [];
     }
-
+    updateStrategyLaunchButtonState();
     displayActiveCampaigns();
 }
 
@@ -2773,8 +2822,13 @@ async function createCampaign() {
     const strategySelect = document.getElementById('campaignStrategy');
     const strategyVersionSelect = document.getElementById('campaignStrategyVersion');
     const strategyWarning = document.getElementById('campaignStrategyWarning');
+    const createCampaignBtn = document.getElementById('createCampaignBtn');
+    const launchDate = document.getElementById('launchDate');
+    const startDate = document.getElementById('startDate');
+    const endDate = document.getElementById('endDate');
     
     if (!campaignName || !campaignObjective) return;
+    if (isCreateCampaignInFlight) return;
     
     const selectedChannels = Array.from(
         document.querySelectorAll('.wizard-step[data-step="2"] input[type="checkbox"]:checked')
@@ -2783,6 +2837,12 @@ async function createCampaign() {
     if (!campaignName.value || !campaignObjective.value || selectedChannels.length === 0) {
         showErrorMessage('Please fill in all required fields.');
         return;
+    }
+
+    isCreateCampaignInFlight = true;
+    if (createCampaignBtn) {
+        createCampaignBtn.disabled = true;
+        createCampaignBtn.textContent = currentEditingCampaignId ? 'Saving...' : 'Creating...';
     }
 
     try {
@@ -2817,7 +2877,9 @@ async function createCampaign() {
             target_audience: campaignObjective.value,
             audience_source: audienceSource?.value || 'scraped_leads',
             content: JSON.stringify(channelContent),
-            schedule_date: null,
+            schedule_date: launchDate?.value ? new Date(launchDate.value).toISOString() : null,
+            start_date: startDate?.value ? new Date(startDate.value).toISOString() : null,
+            end_date: endDate?.value ? new Date(endDate.value).toISOString() : null,
             budget: null
         };
         if (strategyId) {
@@ -2827,26 +2889,278 @@ async function createCampaign() {
             payload.strategy_version_no = parseInt(strategyVersion, 10);
         }
 
-        console.log('[campaign_debug] createCampaign payload:', payload);
-        await apiRequest('/api/campaigns/create', 'POST', payload);
+        const isEditing = !!currentEditingCampaignId;
+        if (isEditing) {
+            const updatePayload = {
+                campaign_name: payload.campaign_name,
+                channels: payload.channels,
+                target_audience: payload.target_audience,
+                content: payload.content,
+                schedule_date: payload.schedule_date,
+                start_date: payload.start_date,
+                end_date: payload.end_date,
+                budget: currentEditingCampaignBudget,
+                strategy_id: payload.strategy_id || null,
+                strategy_version_no: payload.strategy_version_no || null
+            };
+            console.log('[campaign_debug] updateCampaign payload:', updatePayload);
+            await apiRequest(`/api/campaigns/${encodeURIComponent(currentEditingCampaignId)}`, 'PUT', updatePayload);
+        } else {
+            const idempotencyKey = `campaign-create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            console.log('[campaign_debug] createCampaign payload:', payload);
+            await apiRequestWithOptions('/api/campaigns/create', {
+                method: 'POST',
+                headers: {
+                    'Idempotency-Key': idempotencyKey
+                },
+                body: JSON.stringify(payload)
+            });
+        }
 
         const createdCampaignName = campaignName.value;
 
         nextWizardStep(1);
         const form = document.getElementById('campaignDetailsForm');
         if (form) form.reset();
+        if (launchDate) launchDate.value = '';
+        if (startDate) startDate.value = '';
+        if (endDate) endDate.value = '';
         if (strategySelect) strategySelect.value = '';
         resetCampaignStrategyVersionDropdown();
+        resetCampaignEditMode();
 
         showCampaignTab('active');
         setActiveCampaignTab(document.querySelector('[data-tab="active"]'));
         await loadCampaigns();
 
-        showSuccessMessage(`Campaign "${createdCampaignName}" created successfully!`);
+        showSuccessMessage(isEditing
+            ? `Campaign "${createdCampaignName}" updated successfully!`
+            : `Campaign "${createdCampaignName}" created successfully!`);
     } catch (error) {
         console.error('Campaign creation error:', error);
         showErrorMessage(error.message || 'Failed to create campaign.');
+    } finally {
+        isCreateCampaignInFlight = false;
+        if (createCampaignBtn) {
+            createCampaignBtn.disabled = false;
+            createCampaignBtn.textContent = currentEditingCampaignId ? 'Save Campaign' : 'Create Campaign';
+        }
     }
+}
+
+function resetCampaignEditMode() {
+    currentEditingCampaignId = null;
+    currentEditingCampaignBudget = null;
+    const createCampaignBtn = document.getElementById('createCampaignBtn');
+    if (createCampaignBtn) {
+        createCampaignBtn.textContent = 'Create Campaign';
+    }
+}
+
+function toDateTimeLocalValue(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const tzOffsetMs = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - tzOffsetMs).toISOString().slice(0, 16);
+}
+
+function parseCampaignContentForEditor(rawContent) {
+    const normalized = {
+        email: { subject: '', body: '' },
+        linkedin: { post: '' },
+        facebook: { post: '' },
+        whatsapp: { message: '' },
+        twitter: { post: '' },
+    };
+
+    const applyLegacyEntry = (entry = {}) => {
+        const channel = String(entry.channel || '').trim().toLowerCase();
+        if (!channel) return;
+        const subject = String(entry.subject || '').trim();
+        const content = String(entry.content || entry.body || entry.message || '').trim();
+        if (channel === 'email') {
+            normalized.email.subject = subject;
+            normalized.email.body = content;
+            return;
+        }
+        if (channel === 'linkedin' || channel === 'facebook' || channel === 'twitter') {
+            normalized[channel].post = content;
+            return;
+        }
+        if (channel === 'whatsapp') {
+            normalized.whatsapp.message = content;
+        }
+    };
+
+    let parsed = rawContent;
+    if (typeof rawContent === 'string') {
+        const text = rawContent.trim();
+        if (!text) return normalized;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            normalized.email.body = text;
+            return normalized;
+        }
+    }
+
+    if (Array.isArray(parsed)) {
+        parsed.forEach((entry) => {
+            if (entry && typeof entry === 'object') {
+                applyLegacyEntry(entry);
+            }
+        });
+        return normalized;
+    }
+
+    if (parsed && typeof parsed === 'object') {
+        const email = parsed.email;
+        if (email && typeof email === 'object') {
+            normalized.email.subject = String(email.subject || '').trim();
+            normalized.email.body = String(email.body || email.content || '').trim();
+        }
+        const linkedin = parsed.linkedin;
+        if (linkedin && typeof linkedin === 'object') {
+            normalized.linkedin.post = String(linkedin.post || linkedin.content || '').trim();
+        }
+        const facebook = parsed.facebook;
+        if (facebook && typeof facebook === 'object') {
+            normalized.facebook.post = String(facebook.post || facebook.content || '').trim();
+        }
+        const whatsapp = parsed.whatsapp;
+        if (whatsapp && typeof whatsapp === 'object') {
+            normalized.whatsapp.message = String(whatsapp.message || whatsapp.content || '').trim();
+        }
+        const twitter = parsed.twitter;
+        if (twitter && typeof twitter === 'object') {
+            normalized.twitter.post = String(twitter.post || twitter.content || '').trim();
+        }
+
+        const legacyEntries = parsed.legacy_channels;
+        if (Array.isArray(legacyEntries)) {
+            legacyEntries.forEach((entry) => {
+                if (entry && typeof entry === 'object') {
+                    applyLegacyEntry(entry);
+                }
+            });
+        }
+    }
+
+    return normalized;
+}
+
+function setSelectValueAllowCustom(selectEl, value, fallbackLabel = 'Custom') {
+    if (!selectEl) return;
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+        selectEl.value = '';
+        return;
+    }
+    const existing = Array.from(selectEl.options).find((opt) => String(opt.value) === normalized);
+    if (!existing) {
+        const option = document.createElement('option');
+        option.value = normalized;
+        option.textContent = fallbackLabel ? `${fallbackLabel}: ${normalized}` : normalized;
+        selectEl.appendChild(option);
+    }
+    selectEl.value = normalized;
+}
+
+async function startCampaignEditFlow(campaignId) {
+    const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}`);
+    const campaign = response?.campaign;
+    if (!campaign || typeof campaign !== 'object') {
+        throw new Error('Campaign details could not be loaded.');
+    }
+
+    currentEditingCampaignId = String(campaign.campaign_id || campaign.id || campaignId);
+    currentEditingCampaignBudget = (campaign.budget !== null && campaign.budget !== undefined)
+        ? Number(campaign.budget)
+        : null;
+
+    const createCampaignBtn = document.getElementById('createCampaignBtn');
+    if (createCampaignBtn) {
+        createCampaignBtn.textContent = 'Save Campaign';
+    }
+
+    showCampaignTab('create');
+    setActiveCampaignTab(document.querySelector('[data-tab="create"]'));
+    nextWizardStep(1);
+
+    const campaignName = document.getElementById('campaignName');
+    const campaignObjective = document.getElementById('campaignObjective');
+    const audienceSource = document.getElementById('audienceSource');
+    const strategySelect = document.getElementById('campaignStrategy');
+    const strategyVersionSelect = document.getElementById('campaignStrategyVersion');
+    const launchDate = document.getElementById('launchDate');
+    const startDate = document.getElementById('startDate');
+    const endDate = document.getElementById('endDate');
+
+    if (campaignName) campaignName.value = campaign.campaign_name || campaign.name || '';
+    if (campaignObjective) {
+        const objective = campaign.objective || campaign.target_audience || '';
+        setSelectValueAllowCustom(campaignObjective, objective, 'Audience');
+    }
+    if (audienceSource) {
+        audienceSource.value = campaign.audience_source || 'scraped_leads';
+    }
+
+    if (strategySelect) {
+        setSelectValueAllowCustom(strategySelect, campaign.strategy_id || '', 'Strategy');
+    }
+
+    if (strategySelect && campaign.strategy_id) {
+        await handleCampaignStrategyChange({ target: { value: strategySelect.value } });
+        if (strategyVersionSelect && campaign.strategy_version_no !== null && campaign.strategy_version_no !== undefined) {
+            setSelectValueAllowCustom(strategyVersionSelect, String(campaign.strategy_version_no), 'Version');
+        }
+    } else {
+        resetCampaignStrategyVersionDropdown();
+    }
+
+    if (launchDate) launchDate.value = toDateTimeLocalValue(campaign.schedule_date);
+    if (startDate) startDate.value = toDateTimeLocalValue(campaign.start_date);
+    if (endDate) endDate.value = toDateTimeLocalValue(campaign.end_date);
+
+    const selectedChannels = Array.isArray(campaign.channels) ? campaign.channels : [];
+    const selectedChannelSet = new Set(selectedChannels.map((channel) => String(channel || '').trim().toLowerCase()));
+    document.querySelectorAll('.wizard-step[data-step="2"] input[type="checkbox"]').forEach((checkbox) => {
+        checkbox.checked = selectedChannelSet.has(String(checkbox.value || '').trim().toLowerCase());
+    });
+
+    generateContentForms();
+    const contentMap = parseCampaignContentForEditor(campaign.content);
+    const checkedChannels = Array.from(
+        document.querySelectorAll('.wizard-step[data-step="2"] input[type="checkbox"]:checked')
+    ).map((cb) => cb.value);
+    checkedChannels.forEach((channel) => {
+        const key = String(channel || '').trim().toLowerCase();
+        const subjectEl = document.getElementById(`${channel}-subject`);
+        const contentEl = document.getElementById(`${channel}-content`);
+        if (!contentEl) return;
+
+        if (key === 'email') {
+            if (subjectEl) subjectEl.value = contentMap.email.subject || '';
+            contentEl.value = contentMap.email.body || '';
+            return;
+        }
+        if (key === 'linkedin') {
+            contentEl.value = contentMap.linkedin.post || '';
+            return;
+        }
+        if (key === 'facebook') {
+            contentEl.value = contentMap.facebook.post || '';
+            return;
+        }
+        if (key === 'whatsapp') {
+            contentEl.value = contentMap.whatsapp.message || '';
+            return;
+        }
+        if (key === 'twitter') {
+            contentEl.value = contentMap.twitter.post || '';
+        }
+    });
 }
 
 function displayActiveCampaigns() {
@@ -2881,27 +3195,77 @@ function displayActiveCampaigns() {
         if (typeof rawContent === 'string') {
             try {
                 const parsed = JSON.parse(rawContent);
-                return Array.isArray(parsed) ? parsed : [parsed];
+                if (Array.isArray(parsed)) return parsed;
+                if (parsed && typeof parsed === 'object') {
+                    return Object.entries(parsed).map(([channel, payload]) => ({ channel, payload }));
+                }
+                return [{ content: rawContent }];
             } catch {
                 return [{ content: rawContent }];
             }
         }
-        if (typeof rawContent === 'object') return [rawContent];
+        if (typeof rawContent === 'object') {
+            return Object.entries(rawContent).map(([channel, payload]) => ({ channel, payload }));
+        }
         return [];
+    };
+
+    const getStatusMeta = (statusValue) => {
+        const normalized = String(statusValue || 'unknown').toLowerCase();
+        const map = {
+            draft: 'status--draft',
+            scheduled: 'status--scheduled',
+            active: 'status--active',
+            paused: 'status--paused',
+            stopped: 'status--stopped',
+            failed: 'status--error',
+            completed: 'status--success',
+        };
+        return {
+            normalized,
+            className: map[normalized] || 'status--info',
+            label: normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Unknown',
+        };
+    };
+
+    const buildActionButtons = (campaignId, status) => {
+        const buttons = [
+            `<button class="btn btn--sm btn--secondary action-btn" data-action="edit" data-id="${escapeAttr(String(campaignId))}">Edit</button>`
+        ];
+        if (status === 'draft') {
+            buttons.push(`<button class="btn btn--sm btn--outline action-btn" data-action="schedule" data-id="${escapeAttr(String(campaignId))}">Schedule</button>`);
+        }
+        if (status === 'draft' || status === 'scheduled') {
+            buttons.push(`<button class="btn btn--sm btn--primary action-btn" data-action="launch" data-id="${escapeAttr(String(campaignId))}">Launch</button>`);
+        }
+        if (status === 'active' || status === 'scheduled') {
+            buttons.push(`<button class="btn btn--sm btn--outline action-btn" data-action="pause" data-id="${escapeAttr(String(campaignId))}">Pause</button>`);
+        }
+        if (status === 'paused' || status === 'stopped') {
+            buttons.push(`<button class="btn btn--sm btn--outline action-btn" data-action="resume" data-id="${escapeAttr(String(campaignId))}">Resume</button>`);
+        }
+        if (['draft', 'scheduled', 'active', 'paused'].includes(status)) {
+            buttons.push(`<button class="btn btn--sm btn--outline action-btn" data-action="stop" data-id="${escapeAttr(String(campaignId))}">Stop</button>`);
+        }
+        buttons.push(`<button class="btn btn--sm btn--outline action-btn" data-action="delete" data-id="${escapeAttr(String(campaignId))}">Delete</button>`);
+        return buttons.join('');
     };
     
     campaignsGrid.innerHTML = appData.campaigns.map(campaign => {
         const campaignId = campaign.id || campaign.campaign_id || Date.now();
         const channels = Array.isArray(campaign.channels) ? campaign.channels : [];
         const contentItems = parseContent(campaign.content);
+        const statusMeta = getStatusMeta(campaign.status);
         const scheduleDate = campaign.schedule_date ? formatValue(campaign.schedule_date) : 'Not scheduled';
+        const startDate = campaign.start_date ? formatValue(campaign.start_date) : 'Not set';
+        const endDate = campaign.end_date ? formatValue(campaign.end_date) : 'Not set';
         const budget = campaign.budget !== null && campaign.budget !== undefined ? formatValue(campaign.budget) : 'Not set';
         const metrics = campaign.metrics || { sent: 0, opened: 0, clicked: 0, converted: 0 };
 
         const extraFields = Object.entries(campaign)
             .filter(([k]) => ![
                 'id', 'campaign_id', 'name', 'campaign_name', 'objective', 'target_audience',
-                'channels', 'status', 'created', 'metrics', 'content', 'schedule_date', 'budget'
+                'channels', 'status', 'created', 'metrics', 'content', 'schedule_date', 'start_date', 'end_date', 'budget'
             ].includes(k))
             .map(([k, v]) => `<div><strong>${k}:</strong> ${formatValue(v)}</div>`)
             .join('');
@@ -2911,7 +3275,7 @@ function displayActiveCampaigns() {
             <div class="campaign-card__header">
                 <h3 class="campaign-card__title">${campaign.name || campaign.campaign_name || 'Untitled Campaign'}</h3>
                 <div class="campaign-card__status">
-                    <span class="status status--success">${campaign.status || 'Unknown'}</span>
+                    <span class="status ${statusMeta.className}">${statusMeta.label}</span>
                 </div>
             </div>
             <div class="campaign-card__body">
@@ -2919,6 +3283,8 @@ function displayActiveCampaigns() {
                     <div><strong>Objective:</strong> ${campaign.objective || campaign.target_audience || 'N/A'}</div>
                     <div><strong>Channels:</strong> ${channels.length ? channels.map(ch => `<span class="status status--info">${ch}</span>`).join(' ') : 'N/A'}</div>
                     <div><strong>Schedule Date:</strong> ${scheduleDate}</div>
+                    <div><strong>Start Date:</strong> ${startDate}</div>
+                    <div><strong>End Date:</strong> ${endDate}</div>
                     <div><strong>Budget:</strong> ${budget}</div>
                 </div>
 
@@ -2930,7 +3296,8 @@ function displayActiveCampaigns() {
                                 ${item.channel ? `<div><strong>Channel:</strong> ${formatValue(item.channel)}</div>` : ''}
                                 ${item.subject ? `<div><strong>Subject:</strong> ${formatValue(item.subject)}</div>` : ''}
                                 ${item.content ? `<div><strong>Message:</strong> ${formatValue(item.content)}</div>` : ''}
-                                ${!item.channel && !item.subject && !item.content ? `<div>${formatValue(item)}</div>` : ''}
+                                ${item.payload ? `<div>${formatValue(item.payload)}</div>` : ''}
+                                ${!item.channel && !item.subject && !item.content && !item.payload ? `<div>${formatValue(item)}</div>` : ''}
                             </div>
                         `).join('')}
                     </div>
@@ -2957,58 +3324,53 @@ function displayActiveCampaigns() {
                     </div>
                 </div>
                 <div class="campaign-card__actions">
-                    <button class="btn btn--sm btn--secondary edit-btn" data-id="${escapeAttr(String(campaignId))}">Edit</button>
-                    <button class="btn btn--sm btn--outline pause-btn" data-id="${escapeAttr(String(campaignId))}">Pause</button>
+                    ${buildActionButtons(campaignId, statusMeta.normalized)}
                 </div>
             </div>
         </div>
         `;
     }).join('');
 
-    campaignsGrid.querySelectorAll('.edit-btn').forEach(button => {
-        button.addEventListener('click', () => {
-            editCampaign(button.dataset.id);
-        });
-    });
+    campaignsGrid.querySelectorAll('.action-btn').forEach(button => {
+        button.addEventListener('click', async () => {
+            const action = button.dataset.action;
+            const campaignId = button.dataset.id;
+            if (!campaignId || !action) return;
 
-    campaignsGrid.querySelectorAll('.pause-btn').forEach(button => {
-        button.addEventListener('click', () => {
-            pauseCampaign(button.dataset.id);
+            if (action === 'edit') return editCampaign(campaignId);
+            if (action === 'pause') return pauseCampaign(campaignId);
+            if (action === 'resume') return resumeCampaign(campaignId);
+            if (action === 'stop') return stopCampaign(campaignId);
+            if (action === 'launch') return launchCampaign(campaignId);
+            if (action === 'schedule') return scheduleCampaign(campaignId);
+            if (action === 'delete') return deleteCampaign(campaignId);
         });
     });
 }
 
 async function editCampaign(campaignId) {
-    const campaign = appData.campaigns.find(c => String(c.campaign_id || c.id) === String(campaignId));
-    const currentName = campaign?.campaign_name || campaign?.name || '';
-    const nextName = prompt('Edit campaign name', currentName);
-
-    if (nextName === null) {
-        return;
-    }
-
-    const updatedName = nextName.trim();
-    if (!updatedName) {
-        showErrorMessage('Campaign name cannot be empty.');
-        return;
-    }
-
     try {
-        await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}`, 'PUT', {
-            campaign_name: updatedName
-        });
-
-        await loadCampaigns();
-        showSuccessMessage('Campaign updated successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
+        await startCampaignEditFlow(campaignId);
+        showSuccessMessage('Campaign loaded. Review and save your changes.');
     } catch (error) {
         console.error('Campaign update error:', error);
-        showErrorMessage(error.message || 'Failed to update campaign.');
+        showErrorMessage(error.message || 'Failed to load campaign for editing.');
     }
 }
 
 async function pauseCampaign(campaignId) {
     try {
-        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/pause`, 'POST', {});
+        let response;
+        try {
+            response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/pause`, 'PATCH', {});
+        } catch (error) {
+            const msg = String(error?.message || '').toLowerCase();
+            if (msg.includes('404') || msg.includes('405')) {
+                response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/pause`, 'POST', {});
+            } else {
+                throw error;
+            }
+        }
         await loadCampaigns();
 
         const newStatus = response?.campaign?.status || 'updated';
@@ -3016,6 +3378,68 @@ async function pauseCampaign(campaignId) {
     } catch (error) {
         console.error('Campaign pause error:', error);
         showErrorMessage(error.message || 'Failed to update campaign status.');
+    }
+}
+
+async function resumeCampaign(campaignId) {
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/resume`, 'PATCH', {});
+        await loadCampaigns();
+        showSuccessMessage(response?.message || 'Campaign resumed successfully.');
+    } catch (error) {
+        console.error('Campaign resume error:', error);
+        showErrorMessage(error.message || 'Failed to resume campaign.');
+    }
+}
+
+async function stopCampaign(campaignId) {
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/stop`, 'PATCH', {});
+        await loadCampaigns();
+        showSuccessMessage(response?.message || 'Campaign stopped successfully.');
+    } catch (error) {
+        console.error('Campaign stop error:', error);
+        showErrorMessage(error.message || 'Failed to stop campaign.');
+    }
+}
+
+async function launchCampaign(campaignId) {
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/launch`, 'POST', {});
+        await loadCampaigns();
+        showSuccessMessage(response?.message || 'Campaign launched successfully.');
+    } catch (error) {
+        console.error('Campaign launch error:', error);
+        showErrorMessage(error.message || 'Failed to launch campaign.');
+    }
+}
+
+async function scheduleCampaign(campaignId) {
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}/schedule`, 'POST', {});
+        await loadCampaigns();
+        showSuccessMessage(response?.message || 'Campaign scheduled successfully.');
+    } catch (error) {
+        console.error('Campaign schedule error:', error);
+        showErrorMessage(error.message || 'Failed to schedule campaign.');
+    }
+}
+
+async function deleteCampaign(campaignId) {
+    const confirmed = window.confirm('Are you sure you want to delete this campaign?');
+    if (!confirmed) return;
+    try {
+        const response = await apiRequest(`/api/campaigns/${encodeURIComponent(campaignId)}`, 'DELETE');
+        if (String(appData.reviewCampaignId || '') === String(campaignId)) {
+            appData.reviewCampaignId = null;
+            updateStrategyLaunchButtonState();
+            saveDataToStorage();
+        }
+        await loadCampaigns();
+        showSuccessMessage(response?.message || 'Campaign deleted successfully.');
+    } catch (error) {
+        console.error('Campaign delete error:', error);
+        showErrorMessage(error.message || 'Failed to delete campaign.');
     }
 }
 
@@ -3273,6 +3697,7 @@ function saveDataToStorage() {
             businessProfile: appData.businessProfile,
             generatedStrategy: appData.generatedStrategy,
             currentStrategyId: appData.currentStrategyId,
+            reviewCampaignId: appData.reviewCampaignId,
             scrapedLeads: appData.scrapedLeads,
             enrichedData: appData.enrichedData,
             campaigns: appData.campaigns,
@@ -3326,6 +3751,10 @@ function loadDataFromStorage() {
             if (typeof parsedData.currentStrategyId === 'string' && parsedData.currentStrategyId.trim()) {
                 appData.currentStrategyId = parsedData.currentStrategyId.trim();
             }
+
+            if (typeof parsedData.reviewCampaignId === 'string' && parsedData.reviewCampaignId.trim()) {
+                appData.reviewCampaignId = parsedData.reviewCampaignId.trim();
+            }
             
             if (parsedData.scrapedLeads) {
                 appData.scrapedLeads = parsedData.scrapedLeads;
@@ -3338,6 +3767,7 @@ function loadDataFromStorage() {
     } catch (error) {
         console.warn('Could not load data from localStorage:', error);
     }
+    updateStrategyLaunchButtonState();
     updateProfileCTAState();
 }
 
@@ -3346,6 +3776,7 @@ function exportApplicationData() {
         businessProfile: appData.businessProfile,
         generatedStrategy: appData.generatedStrategy,
         currentStrategyId: appData.currentStrategyId,
+        reviewCampaignId: appData.reviewCampaignId,
         scrapedLeads: appData.scrapedLeads,
         campaigns: appData.campaigns,
         exportDate: new Date().toISOString(),
@@ -3369,5 +3800,10 @@ function exportApplicationData() {
 window.nextWizardStep = nextWizardStep;
 window.editCampaign = editCampaign;
 window.pauseCampaign = pauseCampaign;
+window.resumeCampaign = resumeCampaign;
+window.stopCampaign = stopCampaign;
+window.launchCampaign = launchCampaign;
+window.scheduleCampaign = scheduleCampaign;
+window.deleteCampaign = deleteCampaign;
 window.showTemplateModal = showTemplateModal;
 window.closeModal = closeModal;

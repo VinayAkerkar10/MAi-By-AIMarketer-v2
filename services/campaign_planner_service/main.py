@@ -11,6 +11,9 @@ import uuid
 import sys
 import os
 import httpx
+import time
+import json
+import re
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,6 +37,42 @@ app.add_middleware(
 LEAD_SERVICE_URL = os.getenv("LEAD_SERVICE_URL", "http://lead_enrichment_service:8004")
 LEAD_SERVICE_TIMEOUT = httpx.Timeout(10.0, connect=10.0)
 ALLOWED_AUDIENCE_SOURCES = {"scraped_leads", "customer_upload", "manual_selection"}
+IDEMPOTENCY_TTL_SECONDS = int(os.getenv("CAMPAIGN_IDEMPOTENCY_TTL_SECONDS", "3600"))
+_IDEMPOTENCY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _build_idempotency_cache_key(organization_id: str, idempotency_key: str) -> str:
+    return f"{organization_id}:{idempotency_key}"
+
+
+def _prune_idempotency_cache() -> None:
+    if not _IDEMPOTENCY_CACHE:
+        return
+    cutoff = time.time() - IDEMPOTENCY_TTL_SECONDS
+    stale_keys = [k for k, v in _IDEMPOTENCY_CACHE.items() if float(v.get("ts", 0.0)) < cutoff]
+    for key in stale_keys:
+        _IDEMPOTENCY_CACHE.pop(key, None)
+
+
+def _get_cached_campaign_id(organization_id: str, idempotency_key: str) -> Optional[str]:
+    if not idempotency_key:
+        return None
+    _prune_idempotency_cache()
+    cache_key = _build_idempotency_cache_key(organization_id, idempotency_key)
+    row = _IDEMPOTENCY_CACHE.get(cache_key) or {}
+    campaign_id = str(row.get("campaign_id") or "").strip()
+    return campaign_id or None
+
+
+def _cache_campaign_id(organization_id: str, idempotency_key: str, campaign_id: str) -> None:
+    if not idempotency_key or not campaign_id:
+        return
+    _prune_idempotency_cache()
+    cache_key = _build_idempotency_cache_key(organization_id, idempotency_key)
+    _IDEMPOTENCY_CACHE[cache_key] = {
+        "campaign_id": campaign_id,
+        "ts": time.time(),
+    }
 
 
 # ===== REQUEST MODELS =====
@@ -44,6 +83,8 @@ class CampaignRequest(BaseModel):
     target_audience: str = Field(..., description="Target audience for the campaign")
     content: Optional[str] = Field(None, description="Campaign content")
     schedule_date: Optional[datetime] = Field(None, description="When to schedule the campaign")
+    start_date: Optional[datetime] = Field(None, description="Campaign start date")
+    end_date: Optional[datetime] = Field(None, description="Campaign end date")
     budget: Optional[float] = Field(None, description="Campaign budget")
     audience_source: Optional[str] = Field("scraped_leads", description="Audience source")
     manual_selection: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Manual selected leads")
@@ -56,6 +97,8 @@ class CampaignUpdateRequest(BaseModel):
     target_audience: Optional[str] = None
     content: Optional[str] = None
     schedule_date: Optional[datetime] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
     budget: Optional[float] = None
     strategy_id: Optional[str] = None
     strategy_version_no: Optional[int] = None
@@ -63,6 +106,8 @@ class CampaignUpdateRequest(BaseModel):
 
 class StrategyCampaignRequest(BaseModel):
     strategy_id: str = Field(..., description="Source strategy ID")
+    strategy_version_no: Optional[int] = Field(None, description="Optional strategy version to map from")
+    auto_map: Optional[bool] = Field(True, description="Auto-map strategy outputs to campaign fields")
 
 
 def _validate_strategy_link(
@@ -124,6 +169,8 @@ def _campaign_row_to_response(campaign: Campaign, metric: Optional[CampaignMetri
         "target_audience": campaign.target_audience,
         "content": campaign.content,
         "schedule_date": campaign.schedule_date.isoformat() if campaign.schedule_date else None,
+        "start_date": campaign.start_date.isoformat() if campaign.start_date else None,
+        "end_date": campaign.end_date.isoformat() if campaign.end_date else None,
         "budget": campaign.budget,
         "audience_source": campaign.audience_source or "scraped_leads",
         "manual_selection": campaign.manual_selection if isinstance(campaign.manual_selection, list) else [],
@@ -325,6 +372,96 @@ def send_email_via_smtp(to_email: str, subject: str, body: str) -> bool:
         return False
 
 
+def _parse_campaign_content(raw_content: Any) -> Dict[str, Any]:
+    """
+    Normalize stored campaign content into a dictionary structure.
+    Supported inputs:
+    1) Channel-structured JSON object:
+       {"email":{"subject":"","body":""},"linkedin":{"post":""},...}
+    2) Legacy manual array format:
+       [{"channel":"Email","subject":"...","content":"..."}]
+    3) Plain string content
+    """
+    if isinstance(raw_content, dict):
+        return raw_content
+
+    if isinstance(raw_content, list):
+        # Keep the legacy array under a namespaced key.
+        return {"legacy_channels": raw_content}
+
+    if isinstance(raw_content, str):
+        text = raw_content.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                return {"legacy_channels": parsed}
+            if isinstance(parsed, str):
+                return {"text": parsed}
+            return {"text": text}
+        except Exception:
+            return {"text": text}
+
+    return {}
+
+
+def _extract_channel_payload(content_obj: Dict[str, Any], channel: str) -> Dict[str, str]:
+    channel_key = str(channel or "").strip().lower()
+    if not channel_key:
+        return {}
+
+    channel_data = content_obj.get(channel_key)
+    if isinstance(channel_data, dict):
+        return {k: str(v) for k, v in channel_data.items() if isinstance(k, str)}
+
+    # Legacy array format support: [{"channel":"Email","subject":"...","content":"..."}]
+    legacy_items = content_obj.get("legacy_channels")
+    if isinstance(legacy_items, list):
+        for item in legacy_items:
+            if not isinstance(item, dict):
+                continue
+            item_channel = str(item.get("channel", "")).strip().lower()
+            if item_channel == channel_key:
+                return {k: str(v) for k, v in item.items() if isinstance(k, str) and v is not None}
+
+    return {}
+
+
+def _resolve_email_subject_body(campaign_name: str, content_obj: Dict[str, Any], raw_content: Any) -> Dict[str, str]:
+    default_subject = f"Campaign: {campaign_name or 'Marketing Campaign'}"
+    default_body = "Hello, this is a campaign outreach message."
+
+    email_payload = _extract_channel_payload(content_obj, "email")
+
+    subject = _coerce_string(
+        email_payload.get("subject"),
+        default_subject,
+    )
+    body = _coerce_string(
+        email_payload.get("body") or email_payload.get("content") or email_payload.get("message"),
+        "",
+    )
+
+    if not body:
+        # Channel-structured fallback text
+        body = _coerce_string(content_obj.get("text"), "")
+
+    if not body and isinstance(raw_content, str):
+        # Raw string fallback for older rows
+        body = _coerce_string(raw_content, "")
+
+    if not body:
+        body = default_body
+
+    return {
+        "subject": subject,
+        "body": body,
+    }
+
+
 async def execute_campaign(
     campaign_id: str,
     db: Session,
@@ -395,8 +532,14 @@ async def execute_campaign(
 
     sent = 0
     if audience_source in {"customer_upload", "scraped_leads"}:
-        subject = f"Campaign: {campaign.campaign_name or 'Marketing Campaign'}"
-        body = campaign.content or "Hello, this is a campaign outreach message."
+        content_obj = _parse_campaign_content(campaign.content)
+        email_content = _resolve_email_subject_body(
+            campaign_name=campaign.campaign_name,
+            content_obj=content_obj,
+            raw_content=campaign.content,
+        )
+        subject = email_content["subject"]
+        body = email_content["body"]
         seen_emails = set()
         for lead in leads:
             email = (lead.get("email") or "").strip()
@@ -448,6 +591,7 @@ def _get_strategy_context_for_campaign(
     db: Session,
     organization_id: str,
     strategy_id: str,
+    strategy_version_no: Optional[int] = None,
 ) -> Dict[str, Any]:
     strategy = (
         db.query(Strategy)
@@ -460,16 +604,30 @@ def _get_strategy_context_for_campaign(
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    version = (
-        db.query(StrategyVersion)
-        .filter(
-            StrategyVersion.strategy_id == strategy_id,
-            StrategyVersion.organization_id == organization_id,
-            StrategyVersion.is_current == True,  # noqa: E712
+    version = None
+    if strategy_version_no is not None:
+        version = (
+            db.query(StrategyVersion)
+            .filter(
+                StrategyVersion.strategy_id == strategy_id,
+                StrategyVersion.organization_id == organization_id,
+                StrategyVersion.version_no == strategy_version_no,
+            )
+            .first()
         )
-        .order_by(StrategyVersion.version_no.desc())
-        .first()
-    )
+        if not version:
+            raise HTTPException(status_code=404, detail="Strategy version not found")
+    else:
+        version = (
+            db.query(StrategyVersion)
+            .filter(
+                StrategyVersion.strategy_id == strategy_id,
+                StrategyVersion.organization_id == organization_id,
+                StrategyVersion.is_current == True,  # noqa: E712
+            )
+            .order_by(StrategyVersion.version_no.desc())
+            .first()
+        )
     if not version:
         version = (
             db.query(StrategyVersion)
@@ -493,20 +651,141 @@ def _get_strategy_context_for_campaign(
     }
 
 
+def _parse_possible_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    text = _coerce_string(value, "")
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+
+def _extract_schedule_window_from_timeline(timeline: Any) -> Dict[str, Optional[datetime]]:
+    if not isinstance(timeline, dict):
+        return {"schedule_date": None, "start_date": None, "end_date": None}
+
+    all_dates: List[datetime] = []
+    start_candidates: List[datetime] = []
+    end_candidates: List[datetime] = []
+
+    for key in ("start_date", "start", "launch_date", "scheduled_at"):
+        dt = _parse_possible_datetime(timeline.get(key))
+        if dt:
+            start_candidates.append(dt)
+            all_dates.append(dt)
+    for key in ("end_date", "end", "finish_date"):
+        dt = _parse_possible_datetime(timeline.get(key))
+        if dt:
+            end_candidates.append(dt)
+            all_dates.append(dt)
+
+    for _, phase_value in timeline.items():
+        if isinstance(phase_value, dict):
+            for key in ("start_date", "start", "date", "launch_date", "scheduled_at"):
+                dt = _parse_possible_datetime(phase_value.get(key))
+                if dt:
+                    start_candidates.append(dt)
+                    all_dates.append(dt)
+            for key in ("end_date", "end", "finish_date"):
+                dt = _parse_possible_datetime(phase_value.get(key))
+                if dt:
+                    end_candidates.append(dt)
+                    all_dates.append(dt)
+
+    start_date = min(start_candidates) if start_candidates else (min(all_dates) if all_dates else None)
+    end_date = max(end_candidates) if end_candidates else (max(all_dates) if len(all_dates) > 1 else None)
+
+    if start_date and end_date and end_date < start_date:
+        start_date, end_date = end_date, start_date
+
+    schedule_date = start_date
+    return {
+        "schedule_date": schedule_date,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+def _build_content_prefill_from_strategy(content_strategy: Any) -> Optional[str]:
+    if isinstance(content_strategy, list):
+        cleaned = [str(item).strip() for item in content_strategy if str(item).strip()]
+        if cleaned:
+            return json.dumps({"content_strategy": cleaned})
+    elif isinstance(content_strategy, dict):
+        return json.dumps({"content_strategy": content_strategy})
+    elif isinstance(content_strategy, str):
+        text = content_strategy.strip()
+        if text:
+            return json.dumps({"content_strategy": [text]})
+    return None
+
+
+def _derive_budget_from_strategy(strategy_output: Dict[str, Any], business_profile: Dict[str, Any]) -> Optional[float]:
+    budget_allocation = strategy_output.get("budget_allocation")
+    if isinstance(budget_allocation, dict):
+        direct_keys = ("total_budget", "budget", "recommended_budget", "monthly_budget")
+        for key in direct_keys:
+            raw = budget_allocation.get(key)
+            if isinstance(raw, (int, float)) and float(raw) > 0:
+                return float(raw)
+            if isinstance(raw, str):
+                match = re.search(r"(\d+(?:\.\d+)?)", raw.replace(",", ""))
+                if match:
+                    value = float(match.group(1))
+                    if value > 0:
+                        return value
+
+    budget_range = _coerce_string(business_profile.get("budget_range"), "")
+    if budget_range:
+        numbers = re.findall(r"(\d+(?:\.\d+)?)", budget_range.replace(",", ""))
+        if len(numbers) == 1:
+            value = float(numbers[0])
+            if value > 0:
+                return value
+        if len(numbers) >= 2:
+            low = float(numbers[0])
+            high = float(numbers[1])
+            if low > 0 and high > 0:
+                return (low + high) / 2.0
+            if high > 0:
+                return high
+            if low > 0:
+                return low
+    return None
+
+
 @app.post("/api/campaigns/from-strategy", tags=["Campaigns"])
 async def create_campaign_from_strategy(
     payload: StrategyCampaignRequest,
+    request: Request,
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
     db: Session = Depends(get_db),
 ):
     strategy_id = str(payload.strategy_id or "").strip()
+    auto_map = True if payload.auto_map is None else bool(payload.auto_map)
     if not strategy_id:
         raise HTTPException(status_code=422, detail="strategy_id is required")
+
+    idempotency_key = _coerce_string(request.headers.get("idempotency-key"), "")
+    if idempotency_key:
+        cached_campaign_id = _get_cached_campaign_id(current_user["organization_id"], idempotency_key)
+        if cached_campaign_id:
+            return {
+                "success": True,
+                "campaign_id": cached_campaign_id,
+                "message": "Campaign created from strategy (idempotent replay)",
+                "idempotent_replay": True,
+            }
 
     context = _get_strategy_context_for_campaign(
         db=db,
         organization_id=current_user["organization_id"],
         strategy_id=strategy_id,
+        strategy_version_no=payload.strategy_version_no,
     )
 
     strategy = context["strategy"]
@@ -514,20 +793,59 @@ async def create_campaign_from_strategy(
     business_profile = context["business_profile"]
     strategy_output = context["strategy_output"]
 
-    channels_raw = strategy_output.get("recommended_channels")
-    channels = []
-    if isinstance(channels_raw, list):
-        channels = [str(item).strip() for item in channels_raw if str(item).strip()]
-    if not channels:
-        channels = ["Email", "LinkedIn"]
+    channels: List[str] = ["Email", "LinkedIn"]
+    target_audience = "General B2B audience"
+    schedule_date = None
+    start_date = None
+    end_date = None
+    content = None
+    budget = None
+    kpis: List[str] = []
 
-    target_audience = _coerce_string(business_profile.get("target_audience"), "")
-    if not target_audience:
-        segments = strategy_output.get("target_segments")
-        if isinstance(segments, list) and segments:
-            target_audience = ", ".join([str(item).strip() for item in segments if str(item).strip()])
-    if not target_audience:
-        target_audience = "General B2B audience"
+    if auto_map:
+        channels_raw = strategy_output.get("recommended_channels")
+        mapped_channels: List[str] = []
+        if isinstance(channels_raw, list):
+            mapped_channels = [str(item).strip() for item in channels_raw if str(item).strip()]
+        if mapped_channels:
+            channels = mapped_channels
+
+        target_audience = _coerce_string(business_profile.get("target_audience"), "")
+        if not target_audience:
+            segments = strategy_output.get("target_segments")
+            if isinstance(segments, list) and segments:
+                mapped_segments = [str(item).strip() for item in segments if str(item).strip()]
+                if mapped_segments:
+                    target_audience = ", ".join(mapped_segments)
+        if not target_audience:
+            target_audience = "General B2B audience"
+
+        schedule_window = _extract_schedule_window_from_timeline(strategy_output.get("campaign_timeline"))
+        schedule_date = schedule_window.get("schedule_date")
+        start_date = schedule_window.get("start_date")
+        end_date = schedule_window.get("end_date")
+        content = _build_content_prefill_from_strategy(strategy_output.get("content_strategy"))
+        budget = _derive_budget_from_strategy(strategy_output, business_profile)
+
+        kpis_raw = strategy_output.get("kpis")
+        if isinstance(kpis_raw, list):
+            kpis = [str(item).strip() for item in kpis_raw if str(item).strip()]
+    else:
+        # Preserve existing defaulting behavior when auto_map is disabled.
+        channels_raw = strategy_output.get("recommended_channels")
+        default_channels = []
+        if isinstance(channels_raw, list):
+            default_channels = [str(item).strip() for item in channels_raw if str(item).strip()]
+        if default_channels:
+            channels = default_channels
+
+        target_audience = _coerce_string(business_profile.get("target_audience"), "")
+        if not target_audience:
+            segments = strategy_output.get("target_segments")
+            if isinstance(segments, list) and segments:
+                target_audience = ", ".join([str(item).strip() for item in segments if str(item).strip()])
+        if not target_audience:
+            target_audience = "General B2B audience"
 
     campaign_id = str(uuid.uuid4())
     now = datetime.utcnow()
@@ -542,9 +860,11 @@ async def create_campaign_from_strategy(
             campaign_name=campaign_name,
             channels=channels,
             target_audience=target_audience,
-            content=None,
-            schedule_date=None,
-            budget=None,
+            content=content,
+            schedule_date=schedule_date,
+            start_date=start_date,
+            end_date=end_date,
+            budget=budget,
             audience_source="scraped_leads",
             manual_selection=[],
             status="draft",
@@ -576,10 +896,18 @@ async def create_campaign_from_strategy(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create campaign from strategy: {str(exc)}")
 
+    _cache_campaign_id(current_user["organization_id"], idempotency_key, campaign_id)
+
     return {
         "success": True,
         "campaign_id": campaign_id,
         "message": "Campaign created from strategy",
+        "strategy_metadata": {
+            "strategy_id": strategy.id,
+            "strategy_version_no": version_no,
+            "kpis": kpis,
+            "auto_map": auto_map,
+        },
     }
 
 @app.post("/api/campaigns/create", tags=["Campaigns"])
@@ -601,7 +929,28 @@ async def create_campaign(
         campaign_id = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
         auth_header = request.headers.get("authorization")
+        idempotency_key = _coerce_string(request.headers.get("idempotency-key"), "")
         manual_count = len(campaign.manual_selection or [])
+
+        if idempotency_key:
+            cached_campaign_id = _get_cached_campaign_id(current_user["organization_id"], idempotency_key)
+            if cached_campaign_id:
+                cached_row = (
+                    db.query(Campaign, CampaignMetric)
+                    .outerjoin(CampaignMetric, CampaignMetric.campaign_id == Campaign.id)
+                    .filter(
+                        Campaign.id == cached_campaign_id,
+                        Campaign.organization_id == current_user["organization_id"],
+                    )
+                    .first()
+                )
+                if cached_row:
+                    cached_campaign, cached_metric = cached_row
+                    return {
+                        "success": True,
+                        "campaign": _campaign_row_to_response(cached_campaign, cached_metric),
+                        "idempotent_replay": True,
+                    }
 
         print(
             f"[campaign_debug] create_campaign campaign_id={campaign_id} "
@@ -627,6 +976,8 @@ async def create_campaign(
                 target_audience=campaign.target_audience,
                 content=campaign.content,
                 schedule_date=campaign.schedule_date,
+                start_date=campaign.start_date,
+                end_date=campaign.end_date,
                 budget=campaign.budget,
                 audience_source=audience_source,
                 manual_selection=campaign.manual_selection or [],
@@ -665,6 +1016,7 @@ async def create_campaign(
             organization_id=current_user["organization_id"],
             auth_header=auth_header,
         )
+        _cache_campaign_id(current_user["organization_id"], idempotency_key, campaign_id)
 
         return {
             "success": True,
@@ -680,6 +1032,7 @@ async def create_campaign(
 async def schedule_campaign(
     campaign_id: str,
     background_tasks: BackgroundTasks,
+    request: Request,
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
     db: Session = Depends(get_db),
 ):
@@ -703,7 +1056,12 @@ async def schedule_campaign(
         db.rollback()
         raise
 
-    background_tasks.add_task(_deploy_campaign_task, campaign_id, current_user["organization_id"])
+    background_tasks.add_task(
+        _deploy_campaign_task,
+        campaign_id,
+        current_user["organization_id"],
+        request.headers.get("authorization"),
+    )
 
     return {
         "success": True,
@@ -712,7 +1070,47 @@ async def schedule_campaign(
     }
 
 
-async def _deploy_campaign_task(campaign_id: str, organization_id: str):
+@app.post("/api/campaigns/{campaign_id}/launch", tags=["Campaigns"])
+async def launch_campaign(
+    campaign_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    """Explicitly launch a campaign (strategy-first flow)."""
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    current_status = str(campaign.status or "").lower()
+    if current_status not in {"draft", "scheduled"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaign cannot be launched from status '{current_status}'",
+        )
+
+    updated_campaign = await execute_campaign(
+        campaign_id=campaign_id,
+        db=db,
+        organization_id=current_user["organization_id"],
+        auth_header=request.headers.get("authorization"),
+    )
+
+    return {
+        "success": True,
+        "message": "Campaign launched successfully",
+        "campaign": updated_campaign,
+    }
+
+
+async def _deploy_campaign_task(campaign_id: str, organization_id: str, auth_header: Optional[str] = None):
     """Background task for campaign deployment"""
     db = SessionLocal()
     try:
@@ -727,15 +1125,12 @@ async def _deploy_campaign_task(campaign_id: str, organization_id: str):
         if not campaign:
             return
 
-        channels = campaign.channels if isinstance(campaign.channels, list) else []
-        campaign_payload = _campaign_row_to_response(campaign, None)
-        for channel in channels:
-            await _deploy_to_channel(campaign_id, channel, campaign_payload)
-
-        campaign.status = "active"
-        campaign.deployed_at = datetime.utcnow()
-        campaign.updated_at = datetime.utcnow()
-        db.commit()
+        await execute_campaign(
+            campaign_id=campaign_id,
+            db=db,
+            organization_id=organization_id,
+            auth_header=auth_header,
+        )
     except Exception as e:
         db.rollback()
         campaign = (
@@ -758,6 +1153,80 @@ async def _deploy_campaign_task(campaign_id: str, organization_id: str):
 async def _deploy_to_channel(campaign_id: str, channel: str, campaign_data: dict):
     """Deploy campaign to specific channel"""
     pass
+
+
+def _set_campaign_status(
+    db: Session,
+    campaign_id: str,
+    organization_id: str,
+    target_status: str,
+    allowed_from: Optional[set] = None,
+    already_message: Optional[str] = None,
+    success_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    current_status = str(campaign.status or "").lower()
+    normalized_target = str(target_status or "").lower()
+
+    if current_status == normalized_target:
+        metric = (
+            db.query(CampaignMetric)
+            .filter(
+                CampaignMetric.campaign_id == campaign_id,
+                CampaignMetric.organization_id == organization_id,
+            )
+            .first()
+        )
+        return {
+            "success": True,
+            "message": already_message or f"Campaign already {normalized_target}",
+            "campaign": _campaign_row_to_response(campaign, metric),
+        }
+
+    if allowed_from and current_status not in allowed_from:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot change campaign from '{current_status}' to '{normalized_target}'",
+        )
+
+    campaign.status = normalized_target
+    campaign.updated_at = datetime.utcnow()
+    try:
+        db.commit()
+        db.refresh(campaign)
+    except Exception as exc:
+        db.rollback()
+        # Additive safeguard for environments where 'stopped' constraint migration isn't applied yet.
+        if normalized_target == "stopped":
+            raise HTTPException(
+                status_code=409,
+                detail="Campaign status 'stopped' is not enabled in database yet. Apply migration first.",
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to update campaign status: {str(exc)}")
+
+    metric = (
+        db.query(CampaignMetric)
+        .filter(
+            CampaignMetric.campaign_id == campaign_id,
+            CampaignMetric.organization_id == organization_id,
+        )
+        .first()
+    )
+    return {
+        "success": True,
+        "message": success_message or f"Campaign {normalized_target} successfully",
+        "campaign": _campaign_row_to_response(campaign, metric),
+    }
 
 
 @app.get("/api/campaigns", tags=["Campaigns"])
@@ -849,6 +1318,10 @@ async def update_campaign(
                 db_campaign.content = payload.content
             if payload.schedule_date is not None:
                 db_campaign.schedule_date = payload.schedule_date
+            if payload.start_date is not None:
+                db_campaign.start_date = payload.start_date
+            if payload.end_date is not None:
+                db_campaign.end_date = payload.end_date
             if payload.budget is not None:
                 db_campaign.budget = payload.budget
             if payload.strategy_id is not None:
@@ -922,6 +1395,103 @@ async def pause_campaign(
     return {
         "success": True,
         "campaign": _campaign_row_to_response(campaign, metric),
+    }
+
+
+@app.patch("/api/campaigns/{campaign_id}/pause", tags=["Campaigns"])
+async def pause_campaign_explicit(
+    campaign_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    """Explicit pause endpoint (additive, legacy POST toggle remains unchanged)."""
+    return _set_campaign_status(
+        db=db,
+        campaign_id=campaign_id,
+        organization_id=current_user["organization_id"],
+        target_status="paused",
+        allowed_from={"active", "scheduled"},
+        already_message="Campaign already paused",
+        success_message="Campaign paused successfully",
+    )
+
+
+@app.patch("/api/campaigns/{campaign_id}/resume", tags=["Campaigns"])
+async def resume_campaign(
+    campaign_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    """Resume paused campaign to active."""
+    return _set_campaign_status(
+        db=db,
+        campaign_id=campaign_id,
+        organization_id=current_user["organization_id"],
+        target_status="active",
+        allowed_from={"paused", "stopped"},
+        already_message="Campaign already active",
+        success_message="Campaign resumed successfully",
+    )
+
+
+@app.patch("/api/campaigns/{campaign_id}/stop", tags=["Campaigns"])
+async def stop_campaign(
+    campaign_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    """Stop campaign execution."""
+    return _set_campaign_status(
+        db=db,
+        campaign_id=campaign_id,
+        organization_id=current_user["organization_id"],
+        target_status="stopped",
+        allowed_from={"draft", "scheduled", "active", "paused"},
+        already_message="Campaign already stopped",
+        success_message="Campaign stopped successfully",
+    )
+
+
+@app.delete("/api/campaigns/{campaign_id}", tags=["Campaigns"])
+async def delete_campaign(
+    campaign_id: str,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
+    db: Session = Depends(get_db),
+):
+    """Delete campaign (additive endpoint, no changes to existing flows)."""
+    campaign = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            Campaign.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    metric = (
+        db.query(CampaignMetric)
+        .filter(
+            CampaignMetric.campaign_id == campaign_id,
+            CampaignMetric.organization_id == current_user["organization_id"],
+        )
+        .first()
+    )
+
+    try:
+        if metric:
+            db.delete(metric)
+        db.delete(campaign)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete campaign: {str(exc)}")
+
+    return {
+        "success": True,
+        "message": "Campaign deleted successfully",
+        "campaign_id": campaign_id,
     }
 
 

@@ -212,9 +212,10 @@
 
                             <div class="strategy-section" id="strategyExecutionSection">
                                 <h3>Next Step: Execution</h3>
-                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <div class="strategy-execution-actions">
                                     <button class="btn btn--primary" id="createCampaignFromStrategyBtn">Create Campaign From Strategy</button>
                                     <button class="btn btn--secondary" id="generateLeadsFromStrategyBtn">Generate Leads</button>
+                                    <button class="btn btn--outline" id="launchStrategyCampaignBtn" disabled>Launch Campaign</button>
                                 </div>
                                 <div id="strategyExecutionStatus" style="margin-top: 10px;"></div>
                             </div>
@@ -519,13 +520,19 @@
                                 
                                 <div class="wizard-step hidden" data-step="5">
                                     <h4>Scheduling</h4>
-                                    <div class="form-group">
-                                        <label class="form-label" for="launchDate">Launch Date</label>
-                                        <input type="datetime-local" class="form-control" id="launchDate">
-                                    </div>
-                                    <div class="form-group">
-                                        <label class="form-label" for="endDate">End Date</label>
-                                        <input type="datetime-local" class="form-control" id="endDate">
+                                    <div class="campaign-schedule-grid">
+                                        <div class="form-group">
+                                            <label class="form-label" for="launchDate">Schedule Date</label>
+                                            <input type="datetime-local" class="form-control" id="launchDate">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="startDate">Start Date</label>
+                                            <input type="datetime-local" class="form-control" id="startDate">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="endDate">End Date</label>
+                                            <input type="datetime-local" class="form-control" id="endDate">
+                                        </div>
                                     </div>
                                     <div class="wizard-navigation">
                                         <button type="button" class="btn btn--secondary" onclick="nextWizardStep(4)">Previous</button>

@@ -202,6 +202,8 @@ class Campaign(Base):
     target_audience = Column(String, nullable=False)
     content = Column(Text, nullable=True)
     schedule_date = Column(DateTime, nullable=True)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
     budget = Column(Float, nullable=True)
     audience_source = Column(String, nullable=False, default="scraped_leads")
     manual_selection = Column(JSON, nullable=False, default=list)
@@ -220,6 +222,10 @@ class Campaign(Base):
 
     __table_args__ = (
         CheckConstraint("budget IS NULL OR budget >= 0", name="ck_campaign_budget_non_negative"),
+        CheckConstraint(
+            "end_date IS NULL OR start_date IS NULL OR end_date >= start_date",
+            name="ck_campaign_date_window",
+        ),
         CheckConstraint(
             "status IN ('draft','scheduled','active','paused','failed','completed')",
             name="ck_campaign_status",
