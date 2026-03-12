@@ -1370,29 +1370,87 @@ select.form-control {
   flex-wrap: wrap;
 }
 
-.status--draft {
-  background: rgba(100, 116, 139, 0.15);
-  color: #334155;
+/* High-contrast campaign status badges for dark UI */
+.campaign-card .status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.2px;
+  border: 1px solid transparent;
+  text-transform: capitalize;
 }
 
-.status--scheduled {
-  background: rgba(2, 132, 199, 0.15);
-  color: #075985;
+.campaign-card .status--active {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: rgba(16, 185, 129, 0.65);
+  color: #d1fae5;
 }
 
-.status--active {
-  background: rgba(16, 185, 129, 0.16);
-  color: #065f46;
+.campaign-card .status--draft {
+  background: rgba(59, 130, 246, 0.28);
+  border-color: rgba(59, 130, 246, 0.65);
+  color: #dbeafe;
 }
 
-.status--paused {
-  background: rgba(245, 158, 11, 0.16);
-  color: #92400e;
+.campaign-card .status--paused {
+  background: rgba(245, 158, 11, 0.30);
+  border-color: rgba(245, 158, 11, 0.70);
+  color: #fef3c7;
 }
 
-.status--stopped {
-  background: rgba(239, 68, 68, 0.16);
-  color: #991b1b;
+.campaign-card .status--stopped {
+  background: rgba(239, 68, 68, 0.30);
+  border-color: rgba(239, 68, 68, 0.72);
+  color: #fee2e2;
+}
+
+.campaign-card .status--scheduled {
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(59, 130, 246, 0.60);
+  color: #dbeafe;
+}
+
+.campaign-card .status--success {
+  background: rgba(16, 185, 129, 0.24);
+  border-color: rgba(16, 185, 129, 0.58);
+  color: #d1fae5;
+}
+
+.campaign-card .status--error {
+  background: rgba(239, 68, 68, 0.26);
+  border-color: rgba(239, 68, 68, 0.62);
+  color: #fee2e2;
+}
+
+.campaign-content-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
+.campaign-content-block {
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-6);
+  padding: var(--space-10);
+}
+
+.campaign-content-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  margin-bottom: var(--space-6);
+}
+
+.campaign-content-line {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
 }
 
 /* Template Cards */

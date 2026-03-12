@@ -462,6 +462,84 @@ def _resolve_email_subject_body(campaign_name: str, content_obj: Dict[str, Any],
     }
 
 
+def _resolve_channel_message(content_obj: Dict[str, Any], channel: str, fallback_keys: List[str]) -> str:
+    payload = _extract_channel_payload(content_obj, channel)
+    for key in fallback_keys:
+        value = _coerce_string(payload.get(key), "")
+        if value:
+            return value
+    return _coerce_string(content_obj.get("text"), "")
+
+
+def _dispatch_email_channel(
+    campaign: Campaign,
+    leads: List[Dict[str, Any]],
+    content_obj: Dict[str, Any],
+) -> int:
+    email_content = _resolve_email_subject_body(
+        campaign_name=campaign.campaign_name,
+        content_obj=content_obj,
+        raw_content=campaign.content,
+    )
+    subject = email_content["subject"]
+    body = email_content["body"]
+
+    sent = 0
+    seen_emails = set()
+    for lead in leads:
+        email = (lead.get("email") or "").strip()
+        if not email:
+            print("[smtp_debug] skip_missing_email", lead.get("id"), lead.get("source"))
+            continue
+        email_key = email.lower()
+        if email_key in seen_emails:
+            print("[smtp_debug] skip_duplicate_email", email)
+            continue
+        seen_emails.add(email_key)
+        print("[smtp_debug] sending to", email)
+        success = send_email_via_smtp(email, subject, body)
+        print("[smtp_debug] send_success", success)
+        if success:
+            sent += 1
+    return sent
+
+
+def _dispatch_linkedin_channel(campaign: Campaign, content_obj: Dict[str, Any]) -> int:
+    post = _resolve_channel_message(content_obj, "linkedin", ["post", "content", "message"])
+    if not post:
+        print(f"[channel_dispatch] linkedin_skipped campaign_id={campaign.id} reason=no_content")
+        return 0
+    print(f"[channel_dispatch] linkedin_placeholder campaign_id={campaign.id} content_len={len(post)}")
+    return 0
+
+
+def _dispatch_facebook_channel(campaign: Campaign, content_obj: Dict[str, Any]) -> int:
+    post = _resolve_channel_message(content_obj, "facebook", ["post", "content", "message"])
+    if not post:
+        print(f"[channel_dispatch] facebook_skipped campaign_id={campaign.id} reason=no_content")
+        return 0
+    print(f"[channel_dispatch] facebook_placeholder campaign_id={campaign.id} content_len={len(post)}")
+    return 0
+
+
+def _dispatch_twitter_channel(campaign: Campaign, content_obj: Dict[str, Any]) -> int:
+    tweet = _resolve_channel_message(content_obj, "twitter", ["tweet", "post", "content", "message"])
+    if not tweet:
+        print(f"[channel_dispatch] twitter_skipped campaign_id={campaign.id} reason=no_content")
+        return 0
+    print(f"[channel_dispatch] twitter_placeholder campaign_id={campaign.id} content_len={len(tweet)}")
+    return 0
+
+
+def _dispatch_whatsapp_channel(campaign: Campaign, content_obj: Dict[str, Any]) -> int:
+    message = _resolve_channel_message(content_obj, "whatsapp", ["message", "content", "post"])
+    if not message:
+        print(f"[channel_dispatch] whatsapp_skipped campaign_id={campaign.id} reason=no_content")
+        return 0
+    print(f"[channel_dispatch] whatsapp_placeholder campaign_id={campaign.id} content_len={len(message)}")
+    return 0
+
+
 async def execute_campaign(
     campaign_id: str,
     db: Session,
@@ -533,29 +611,22 @@ async def execute_campaign(
     sent = 0
     if audience_source in {"customer_upload", "scraped_leads"}:
         content_obj = _parse_campaign_content(campaign.content)
-        email_content = _resolve_email_subject_body(
-            campaign_name=campaign.campaign_name,
-            content_obj=content_obj,
-            raw_content=campaign.content,
-        )
-        subject = email_content["subject"]
-        body = email_content["body"]
-        seen_emails = set()
-        for lead in leads:
-            email = (lead.get("email") or "").strip()
-            if not email:
-                print("[smtp_debug] skip_missing_email", lead.get("id"), lead.get("source"))
-                continue
-            email_key = email.lower()
-            if email_key in seen_emails:
-                print("[smtp_debug] skip_duplicate_email", email)
-                continue
-            seen_emails.add(email_key)
-            print("[smtp_debug] sending to", email)
-            success = send_email_via_smtp(email, subject, body)
-            print("[smtp_debug] send_success", success)
-            if success:
-                sent += 1
+
+        selected_channels = campaign.channels if isinstance(campaign.channels, list) else []
+        normalized_channels = [str(ch).strip().lower() for ch in selected_channels if str(ch).strip()]
+        if not normalized_channels:
+            normalized_channels = ["email"]
+
+        if "email" in normalized_channels:
+            sent += _dispatch_email_channel(campaign, leads, content_obj)
+        if "linkedin" in normalized_channels:
+            _dispatch_linkedin_channel(campaign, content_obj)
+        if "facebook" in normalized_channels:
+            _dispatch_facebook_channel(campaign, content_obj)
+        if "twitter" in normalized_channels:
+            _dispatch_twitter_channel(campaign, content_obj)
+        if "whatsapp" in normalized_channels:
+            _dispatch_whatsapp_channel(campaign, content_obj)
 
     # Real interaction tracking endpoints are not implemented yet.
     # Keep engagement metrics at zero until actual events are recorded.

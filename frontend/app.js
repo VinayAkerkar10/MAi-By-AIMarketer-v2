@@ -2799,20 +2799,127 @@ function generateContentForms() {
     
     const contentDiv = document.getElementById('contentCreation');
     if (contentDiv) {
-        contentDiv.innerHTML = selectedChannels.map(channel => `
-            <div class="content-form">
-                <h5>${channel} Content</h5>
-                <div class="form-group">
-                    <label class="form-label">Subject/Title</label>
-                    <input type="text" class="form-control" id="${channel}-subject" placeholder="Enter ${channel} subject">
+        contentDiv.innerHTML = selectedChannels.map(channel => {
+            const normalized = String(channel || '').trim().toLowerCase();
+
+            if (normalized === 'email') {
+                return `
+                    <div class="content-form">
+                        <h5>Email Content</h5>
+                        <div class="form-group">
+                            <label class="form-label">Subject</label>
+                            <input type="text" class="form-control" id="${channel}-subject" placeholder="Enter email subject">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Body</label>
+                            <textarea class="form-control" id="${channel}-content" rows="5" placeholder="Enter email body"></textarea>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (normalized === 'linkedin' || normalized === 'facebook') {
+                return `
+                    <div class="content-form">
+                        <h5>${channel} Content</h5>
+                        <div class="form-group">
+                            <label class="form-label">Post Content</label>
+                            <textarea class="form-control" id="${channel}-content" rows="4" placeholder="Enter ${channel} post content"></textarea>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (normalized === 'twitter') {
+                return `
+                    <div class="content-form">
+                        <h5>Twitter Content</h5>
+                        <div class="form-group">
+                            <label class="form-label">Tweet Content</label>
+                            <textarea class="form-control" id="${channel}-content" rows="3" maxlength="280" placeholder="Enter tweet content (max 280 chars)"></textarea>
+                            <small style="color: var(--color-text-secondary);">Max 280 characters.</small>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (normalized === 'whatsapp') {
+                return `
+                    <div class="content-form">
+                        <h5>WhatsApp Content</h5>
+                        <div class="form-group">
+                            <label class="form-label">Message</label>
+                            <textarea class="form-control" id="${channel}-content" rows="4" placeholder="Enter WhatsApp message"></textarea>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="content-form">
+                    <h5>${channel} Content</h5>
+                    <div class="form-group">
+                        <label class="form-label">Message</label>
+                        <textarea class="form-control" id="${channel}-content" rows="4" placeholder="Enter ${channel} message"></textarea>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Message Content</label>
-                    <textarea class="form-control" id="${channel}-content" rows="4" placeholder="Enter ${channel} message content"></textarea>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
+}
+
+function validateSelectedChannelContent(selectedChannels) {
+    const normalizedChannels = Array.isArray(selectedChannels)
+        ? selectedChannels.map((c) => String(c || "").trim().toLowerCase()).filter(Boolean)
+        : [];
+
+    for (const channel of normalizedChannels) {
+        if (channel === "email") {
+            const subjectEl = document.getElementById("Email-subject");
+            const bodyEl = document.getElementById("Email-content");
+            const subject = String(subjectEl?.value || "").trim();
+            const body = String(bodyEl?.value || "").trim();
+            if (!subject || !body) {
+                return "Email channel requires both Subject and Body.";
+            }
+            continue;
+        }
+
+        if (channel === "linkedin") {
+            const post = String(document.getElementById("LinkedIn-content")?.value || "").trim();
+            if (!post) return "LinkedIn channel requires Post Content.";
+            continue;
+        }
+
+        if (channel === "facebook") {
+            const post = String(document.getElementById("Facebook-content")?.value || "").trim();
+            if (!post) return "Facebook channel requires Post Content.";
+            continue;
+        }
+
+        if (channel === "twitter") {
+            const tweet = String(document.getElementById("Twitter-content")?.value || "").trim();
+            if (!tweet) return "Twitter channel requires Tweet Content.";
+            if (tweet.length > 280) return "Twitter content must be 280 characters or fewer.";
+            continue;
+        }
+
+        if (channel === "whatsapp") {
+            const message = String(document.getElementById("WhatsApp-content")?.value || "").trim();
+            if (!message) return "WhatsApp channel requires Message content.";
+            continue;
+        }
+
+        // Fallback for unknown/custom channels (backward compatible)
+        const fallbackContentEl = document.getElementById(`${channel}-content`);
+        const fallbackContent = String(fallbackContentEl?.value || "").trim();
+        if (!fallbackContent) {
+            const label = channel.charAt(0).toUpperCase() + channel.slice(1);
+            return `${label} channel requires Message content.`;
+        }
+    }
+
+    return null;
 }
 
 async function createCampaign() {
@@ -2861,14 +2968,44 @@ async function createCampaign() {
             return;
         }
 
-        const channelContent = selectedChannels.map(channel => {
+        const validationError = validateSelectedChannelContent(selectedChannels);
+        if (validationError) {
+            showErrorMessage(validationError);
+            return;
+        }
+
+        const contentSchema = {};
+        selectedChannels.forEach((channel) => {
+            const channelKey = String(channel || '').trim().toLowerCase();
             const contentEl = document.getElementById(`${channel}-content`);
             const subjectEl = document.getElementById(`${channel}-subject`);
-            return {
-                channel,
-                subject: subjectEl?.value || '',
-                content: contentEl?.value || ''
-            };
+            const textValue = String(contentEl?.value || '').trim();
+            const subjectValue = String(subjectEl?.value || '').trim();
+
+            if (channelKey === 'email') {
+                contentSchema.email = {
+                    subject: subjectValue,
+                    body: textValue,
+                };
+                return;
+            }
+            if (channelKey === 'linkedin') {
+                contentSchema.linkedin = { post: textValue };
+                return;
+            }
+            if (channelKey === 'facebook') {
+                contentSchema.facebook = { post: textValue };
+                return;
+            }
+            if (channelKey === 'twitter') {
+                contentSchema.twitter = { tweet: textValue };
+                return;
+            }
+            if (channelKey === 'whatsapp') {
+                contentSchema.whatsapp = { message: textValue };
+                return;
+            }
+            contentSchema[channelKey] = { message: textValue };
         });
 
         const payload = {
@@ -2876,7 +3013,7 @@ async function createCampaign() {
             channels: selectedChannels,
             target_audience: campaignObjective.value,
             audience_source: audienceSource?.value || 'scraped_leads',
-            content: JSON.stringify(channelContent),
+            content: JSON.stringify(contentSchema),
             schedule_date: launchDate?.value ? new Date(launchDate.value).toISOString() : null,
             start_date: startDate?.value ? new Date(startDate.value).toISOString() : null,
             end_date: endDate?.value ? new Date(endDate.value).toISOString() : null,
@@ -2971,7 +3108,7 @@ function parseCampaignContentForEditor(rawContent) {
         linkedin: { post: '' },
         facebook: { post: '' },
         whatsapp: { message: '' },
-        twitter: { post: '' },
+        twitter: { tweet: '' },
     };
 
     const applyLegacyEntry = (entry = {}) => {
@@ -2985,7 +3122,11 @@ function parseCampaignContentForEditor(rawContent) {
             return;
         }
         if (channel === 'linkedin' || channel === 'facebook' || channel === 'twitter') {
-            normalized[channel].post = content;
+            if (channel === 'twitter') {
+                normalized.twitter.tweet = content;
+            } else {
+                normalized[channel].post = content;
+            }
             return;
         }
         if (channel === 'whatsapp') {
@@ -3034,7 +3175,7 @@ function parseCampaignContentForEditor(rawContent) {
         }
         const twitter = parsed.twitter;
         if (twitter && typeof twitter === 'object') {
-            normalized.twitter.post = String(twitter.post || twitter.content || '').trim();
+            normalized.twitter.tweet = String(twitter.tweet || twitter.post || twitter.content || '').trim();
         }
 
         const legacyEntries = parsed.legacy_channels;
@@ -3158,7 +3299,7 @@ async function startCampaignEditFlow(campaignId) {
             return;
         }
         if (key === 'twitter') {
-            contentEl.value = contentMap.twitter.post || '';
+            contentEl.value = contentMap.twitter.tweet || '';
         }
     });
 }
@@ -3210,6 +3351,82 @@ function displayActiveCampaigns() {
         return [];
     };
 
+    const renderCampaignContent = (rawContent) => {
+        const safeText = (value) => {
+            if (value === null || value === undefined) return '';
+            return String(value).trim();
+        };
+
+        let parsed = rawContent;
+        if (typeof rawContent === 'string') {
+            const trimmed = rawContent.trim();
+            if (!trimmed) return '';
+            try {
+                parsed = JSON.parse(trimmed);
+            } catch {
+                return `
+                    <div class="campaign-content-block">
+                        <div class="campaign-content-line"><strong>Message:</strong> ${formatValue(trimmed)}</div>
+                    </div>
+                `;
+            }
+        }
+
+        if (Array.isArray(parsed)) {
+            return parsed.map((item) => {
+                if (!item || typeof item !== 'object') {
+                    return `
+                        <div class="campaign-content-block">
+                            <div class="campaign-content-line"><strong>Message:</strong> ${formatValue(item)}</div>
+                        </div>
+                    `;
+                }
+                return `
+                    <div class="campaign-content-block">
+                        ${item.channel ? `<div class="campaign-content-line"><strong>Channel:</strong> ${formatValue(item.channel)}</div>` : ''}
+                        ${item.subject ? `<div class="campaign-content-line"><strong>Subject:</strong> ${formatValue(item.subject)}</div>` : ''}
+                        ${item.content ? `<div class="campaign-content-line"><strong>Message:</strong> ${formatValue(item.content)}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        if (parsed && typeof parsed === 'object') {
+            const sections = [];
+            const email = parsed.email && typeof parsed.email === 'object' ? parsed.email : null;
+            const linkedin = parsed.linkedin && typeof parsed.linkedin === 'object' ? parsed.linkedin : null;
+            const facebook = parsed.facebook && typeof parsed.facebook === 'object' ? parsed.facebook : null;
+            const twitter = parsed.twitter && typeof parsed.twitter === 'object' ? parsed.twitter : null;
+            const whatsapp = parsed.whatsapp && typeof parsed.whatsapp === 'object' ? parsed.whatsapp : null;
+
+            if (email && (safeText(email.subject) || safeText(email.body) || safeText(email.content))) {
+                sections.push(`<div class="campaign-content-block"><div class="campaign-content-title">Email</div>${safeText(email.subject) ? `<div class="campaign-content-line"><strong>Subject:</strong> ${formatValue(email.subject)}</div>` : ''}${safeText(email.body || email.content) ? `<div class="campaign-content-line"><strong>Body:</strong> ${formatValue(email.body || email.content)}</div>` : ''}</div>`);
+            }
+            if (linkedin && safeText(linkedin.post || linkedin.content || linkedin.message)) {
+                sections.push(`<div class="campaign-content-block"><div class="campaign-content-title">LinkedIn</div><div class="campaign-content-line"><strong>Post:</strong> ${formatValue(linkedin.post || linkedin.content || linkedin.message)}</div></div>`);
+            }
+            if (facebook && safeText(facebook.post || facebook.content || facebook.message)) {
+                sections.push(`<div class="campaign-content-block"><div class="campaign-content-title">Facebook</div><div class="campaign-content-line"><strong>Post:</strong> ${formatValue(facebook.post || facebook.content || facebook.message)}</div></div>`);
+            }
+            if (twitter && safeText(twitter.tweet || twitter.post || twitter.content || twitter.message)) {
+                sections.push(`<div class="campaign-content-block"><div class="campaign-content-title">Twitter</div><div class="campaign-content-line"><strong>Tweet:</strong> ${formatValue(twitter.tweet || twitter.post || twitter.content || twitter.message)}</div></div>`);
+            }
+            if (whatsapp && safeText(whatsapp.message || whatsapp.content || whatsapp.post)) {
+                sections.push(`<div class="campaign-content-block"><div class="campaign-content-title">WhatsApp</div><div class="campaign-content-line"><strong>Message:</strong> ${formatValue(whatsapp.message || whatsapp.content || whatsapp.post)}</div></div>`);
+            }
+
+            if (sections.length > 0) return sections.join('');
+
+            return `
+                <div class="campaign-content-block">
+                    <div class="campaign-content-line"><strong>Message:</strong> ${formatValue(parsed)}</div>
+                </div>
+            `;
+        }
+
+        return '';
+    };
+
     const getStatusMeta = (statusValue) => {
         const normalized = String(statusValue || 'unknown').toLowerCase();
         const map = {
@@ -3254,7 +3471,6 @@ function displayActiveCampaigns() {
     campaignsGrid.innerHTML = appData.campaigns.map(campaign => {
         const campaignId = campaign.id || campaign.campaign_id || Date.now();
         const channels = Array.isArray(campaign.channels) ? campaign.channels : [];
-        const contentItems = parseContent(campaign.content);
         const statusMeta = getStatusMeta(campaign.status);
         const scheduleDate = campaign.schedule_date ? formatValue(campaign.schedule_date) : 'Not scheduled';
         const startDate = campaign.start_date ? formatValue(campaign.start_date) : 'Not set';
@@ -3288,18 +3504,12 @@ function displayActiveCampaigns() {
                     <div><strong>Budget:</strong> ${budget}</div>
                 </div>
 
-                ${contentItems.length ? `
+                ${campaign.content ? `
                     <div style="margin-bottom:12px;">
                         <strong>Content:</strong>
-                        ${contentItems.map(item => `
-                            <div style="margin-top:6px;">
-                                ${item.channel ? `<div><strong>Channel:</strong> ${formatValue(item.channel)}</div>` : ''}
-                                ${item.subject ? `<div><strong>Subject:</strong> ${formatValue(item.subject)}</div>` : ''}
-                                ${item.content ? `<div><strong>Message:</strong> ${formatValue(item.content)}</div>` : ''}
-                                ${item.payload ? `<div>${formatValue(item.payload)}</div>` : ''}
-                                ${!item.channel && !item.subject && !item.content && !item.payload ? `<div>${formatValue(item)}</div>` : ''}
-                            </div>
-                        `).join('')}
+                        <div class="campaign-content-grid">
+                            ${renderCampaignContent(campaign.content)}
+                        </div>
                     </div>
                 ` : ''}
 
