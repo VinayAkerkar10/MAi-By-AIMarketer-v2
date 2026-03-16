@@ -864,6 +864,11 @@ function setupEventListeners() {
     const businessProfileForm = document.getElementById('businessProfileForm');
     if (businessProfileForm) {
         businessProfileForm.addEventListener('submit', handleBusinessProfileSubmit);
+        if (!businessProfileForm.dataset.previewBound) {
+            businessProfileForm.addEventListener('input', updateBusinessProfilePreview);
+            businessProfileForm.addEventListener('change', updateBusinessProfilePreview);
+            businessProfileForm.dataset.previewBound = '1';
+        }
         console.log('Business profile form listener added');
     }
 
@@ -1023,6 +1028,334 @@ function handleBusinessProfileSubmit(e) {
     displayProfileSummary(profile);
     updateProfileCTAState();
     showSuccessMessage('Business profile saved successfully! Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.');
+}
+
+function getBusinessProfileFormData() {
+    const businessName = String(document.getElementById('businessName')?.value || '').trim();
+    const industry = String(document.getElementById('industry')?.value || '').trim();
+    const companySize = String(document.getElementById('companySize')?.value || '').trim();
+    const revenueValue = String(document.getElementById('revenue')?.value || '').trim();
+    const continent = String(document.getElementById('continent')?.value || '').trim();
+    const country = String(document.getElementById('country')?.value || '').trim();
+    const region = String(document.getElementById('region')?.value || '').trim();
+    const budgetValue = String(document.getElementById('budget')?.value || '').trim();
+    const targetAudience = String(document.getElementById('targetAudience')?.value || '').trim();
+    const websiteLink = String(document.getElementById('websiteLink')?.value || '').trim();
+    const marketingGoals = Array.from(document.querySelectorAll('#business-profile input[type="checkbox"]:checked'))
+        .map((cb) => String(cb.value || '').trim())
+        .filter(Boolean);
+
+    return {
+        businessName,
+        industry,
+        companySize,
+        revenue: revenueValue ? parseInt(revenueValue, 10) || 0 : null,
+        continent,
+        country,
+        region,
+        marketingGoals,
+        budget: budgetValue ? parseInt(budgetValue, 10) || 0 : null,
+        targetAudience,
+        websiteLink
+    };
+}
+
+function hasBusinessProfileContent(profile) {
+    if (!profile || typeof profile !== 'object') return false;
+    return Boolean(
+        String(profile.businessName || '').trim() ||
+        String(profile.industry || '').trim() ||
+        String(profile.companySize || '').trim() ||
+        String(profile.continent || '').trim() ||
+        String(profile.country || '').trim() ||
+        String(profile.region || '').trim() ||
+        String(profile.targetAudience || '').trim() ||
+        String(profile.websiteLink || '').trim() ||
+        Number(profile.revenue) > 0 ||
+        Number(profile.budget) > 0 ||
+        (Array.isArray(profile.marketingGoals) && profile.marketingGoals.length > 0)
+    );
+}
+
+function calculateProfileStrength(profile) {
+    const safeProfile = profile && typeof profile === 'object' ? profile : {};
+    const checks = [
+        Boolean(String(safeProfile.businessName || '').trim()),
+        Boolean(String(safeProfile.industry || '').trim()),
+        Boolean(String(safeProfile.companySize || '').trim()),
+        Number(safeProfile.revenue) > 0,
+        Boolean(
+            String(safeProfile.continent || '').trim() ||
+            String(safeProfile.country || '').trim() ||
+            String(safeProfile.region || '').trim()
+        ),
+        Array.isArray(safeProfile.marketingGoals) && safeProfile.marketingGoals.length > 0,
+        Number(safeProfile.budget) > 0,
+        Boolean(String(safeProfile.targetAudience || '').trim()),
+        Boolean(String(safeProfile.websiteLink || '').trim())
+    ];
+
+    const completed = checks.filter(Boolean).length;
+    return Math.round((completed / checks.length) * 100);
+}
+
+function isProfileComplete(profile) {
+    const safeProfile = profile && typeof profile === 'object' ? profile : {};
+    return Boolean(
+        String(safeProfile.businessName || '').trim() &&
+        String(safeProfile.industry || '').trim() &&
+        String(safeProfile.companySize || '').trim() &&
+        Number(safeProfile.revenue) > 0 &&
+        Array.isArray(safeProfile.marketingGoals) &&
+        safeProfile.marketingGoals.length > 0 &&
+        Number(safeProfile.budget) > 0 &&
+        String(safeProfile.targetAudience || '').trim() &&
+        String(safeProfile.websiteLink || '').trim()
+    );
+}
+
+function generateAIInsights(profile) {
+    const safeProfile = profile && typeof profile === 'object' ? profile : {};
+    const insights = [];
+    const suggestions = [];
+    const industry = String(safeProfile.industry || '').trim().toLowerCase();
+    const companySize = String(safeProfile.companySize || '').trim().toLowerCase();
+    const goals = Array.isArray(safeProfile.marketingGoals) ? safeProfile.marketingGoals : [];
+
+    if (industry === 'retail') {
+        insights.push('Retail companies typically allocate 8-12% of revenue to marketing.');
+    }
+    if (industry === 'technology' || industry === 'software development' || industry === 'artificial intelligence') {
+        insights.push('Technology businesses tend to perform well with content-led lead generation and LinkedIn campaigns.');
+    }
+    if (industry === 'healthcare') {
+        insights.push('Healthcare marketing usually benefits from trust-driven messaging and educational content.');
+    }
+    if (industry === 'finance') {
+        insights.push('Finance campaigns usually convert better when compliance, credibility, and case-led messaging are emphasized.');
+    }
+
+    if (companySize === 'small') {
+        insights.push('Small companies often benefit from focusing on lead generation and brand awareness before scaling channels.');
+    }
+    if (companySize === 'medium') {
+        insights.push('Mid-sized companies usually see stronger ROI from segmented campaigns across email and paid social.');
+    }
+    if (companySize === 'large') {
+        insights.push('Larger organizations often benefit from multi-channel orchestration with tighter audience segmentation.');
+    }
+
+    if (goals.includes('Lead Generation')) {
+        insights.push('Lead generation goals usually benefit from combining email nurture with LinkedIn outreach.');
+    }
+    if (goals.includes('Brand Awareness')) {
+        insights.push('Brand awareness goals usually improve with consistent social posting and content amplification.');
+    }
+
+    if (!String(safeProfile.websiteLink || '').trim()) {
+        suggestions.push('Add a website to improve targeting, enrichment quality, and strategy accuracy.');
+    }
+    if (!goals.length) {
+        suggestions.push('Define at least one marketing goal so strategy generation can prioritize the right channels.');
+    }
+    if (!String(safeProfile.targetAudience || '').trim()) {
+        suggestions.push('Describe the target audience to improve messaging and campaign recommendations.');
+    }
+    if (!String(safeProfile.continent || '').trim() && !String(safeProfile.country || '').trim() && !String(safeProfile.region || '').trim()) {
+        suggestions.push('Add geographic information so the strategy can adapt to the right market context.');
+    }
+    if (Number(safeProfile.budget) <= 0) {
+        suggestions.push('Set a marketing budget so recommendations can align with realistic campaign scope.');
+    }
+
+    return { insights, suggestions };
+}
+
+function getIndustryBenchmarks(profile) {
+    const industry = String(profile?.industry || '').trim().toLowerCase();
+    const benchmarks = {
+        retail: {
+            channels: ['Social Media Ads', 'Influencer Marketing', 'Email Campaigns'],
+            conversionRate: '2-4%',
+            budgetNote: 'Retail brands often reinvest heavily into seasonal promotions.'
+        },
+        technology: {
+            channels: ['LinkedIn', 'Content Marketing', 'Email Nurturing'],
+            conversionRate: '3-7%',
+            budgetNote: 'Technology companies usually prioritize demand generation and thought leadership.'
+        },
+        'software development': {
+            channels: ['LinkedIn', 'Case Study Content', 'Email Nurturing'],
+            conversionRate: '3-6%',
+            budgetNote: 'Software companies often grow pipeline with educational assets and outbound sequencing.'
+        },
+        healthcare: {
+            channels: ['Email', 'Search Ads', 'Educational Content'],
+            conversionRate: '2-5%',
+            budgetNote: 'Healthcare marketing performs better with trust-led and compliance-aware messaging.'
+        },
+        finance: {
+            channels: ['Email Campaigns', 'LinkedIn Outreach', 'Webinars'],
+            conversionRate: '2-5%',
+            budgetNote: 'Financial services messaging usually performs best when credibility and proof points are clear.'
+        }
+    };
+
+    return benchmarks[industry] || {
+        channels: ['Email Campaigns', 'LinkedIn Outreach', 'Content Marketing'],
+        conversionRate: '2-5%',
+        budgetNote: 'Benchmarks vary by segment. Complete more profile details for sharper guidance.'
+    };
+}
+
+function formatProfileSummaryValue(value, placeholder, formatter = null) {
+    const rawValue = Array.isArray(value) ? value.filter(Boolean) : value;
+    const hasValue = Array.isArray(rawValue)
+        ? rawValue.length > 0
+        : !(rawValue === null || rawValue === undefined || String(rawValue).trim() === '');
+
+    if (!hasValue) {
+        return `<span class="profile-summary__placeholder">${placeholder}</span>`;
+    }
+
+    if (typeof formatter === 'function') {
+        return formatter(rawValue);
+    }
+
+    return String(rawValue);
+}
+
+function renderInsightsDashboard(profile, options = {}) {
+    const summaryContent = document.getElementById('profileSummaryContent');
+    if (!summaryContent) return;
+    const safeProfile = profile && typeof profile === 'object' ? profile : {};
+    const showEmptyState = options.showEmptyState !== false && !hasBusinessProfileContent(safeProfile);
+    const completed = isProfileComplete(safeProfile);
+    const strength = completed ? 100 : calculateProfileStrength(safeProfile);
+    const { insights, suggestions } = generateAIInsights(safeProfile);
+    const benchmarks = getIndustryBenchmarks(safeProfile);
+    const strengthLabel = completed
+        ? 'Profile complete. The dashboard is now showing the finalized snapshot.'
+        : strength >= 80
+            ? 'Strong profile. Strategy generation should be highly contextual.'
+            : strength >= 50
+                ? 'Good progress. A few more details will improve strategy quality.'
+                : 'Early draft. Add more business context to unlock better recommendations.';
+
+    const revenueMarkup = formatProfileSummaryValue(
+        safeProfile.revenue,
+        'Annual revenue not added yet',
+        (value) => `$${Number(value).toLocaleString()}`
+    );
+    const budgetMarkup = formatProfileSummaryValue(
+        safeProfile.budget,
+        'Marketing budget not added yet',
+        (value) => `$${Number(value).toLocaleString()}`
+    );
+    const goalsMarkup = formatProfileSummaryValue(
+        safeProfile.marketingGoals,
+        'Select one or more goals',
+        (value) => value.join(', ')
+    );
+
+    summaryContent.innerHTML = `
+        <div class="insights-dashboard__grid">
+            <section class="insight-card insight-card--strength dashboard-section">
+                <div class="insight-card__title">Profile Strength</div>
+                <div class="strength-meter">
+                    <div class="strength-meter__meta">
+                        <div class="strength-meter__value">${strength}%</div>
+                        <div class="strength-meter__label">${strengthLabel}</div>
+                    </div>
+                    <div class="strength-meter__bar" aria-label="Profile strength meter">
+                        <div class="strength-meter__fill" style="width: ${strength}%"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="insight-card dashboard-section ${completed ? 'hidden' : ''}">
+                <div class="insight-card__title">AI Insights</div>
+                ${insights.length ? insights.map((item) => `<div class="insight-chip">${item}</div>`).join('') : `<p class="insight-card__text">Select an industry, company size, and goals to unlock tailored guidance.</p>`}
+            </section>
+
+            <section class="insight-card dashboard-section ${completed ? 'hidden' : ''}">
+                <div class="insight-card__title">Industry Benchmarks</div>
+                <div class="benchmark-row"><strong>Typical Channels:</strong> ${benchmarks.channels.join(', ')}</div>
+                <div class="benchmark-row"><strong>Average Conversion Rate:</strong> ${benchmarks.conversionRate}</div>
+                <div class="benchmark-row"><strong>Budget Insight:</strong> ${benchmarks.budgetNote}</div>
+            </section>
+
+            <section class="insight-card dashboard-section ${completed ? 'hidden' : ''}">
+                <div class="insight-card__title">Smart Suggestions</div>
+                ${suggestions.length ? suggestions.map((item) => `<div class="suggestion-item">${item}</div>`).join('') : `<p class="insight-card__text">No major gaps detected. The profile is ready for strategy generation.</p>`}
+            </section>
+
+            <section class="insight-card insight-card--snapshot dashboard-section ${completed ? 'insight-card--snapshot-complete' : ''} ${!completed ? 'hidden' : ''} ${showEmptyState ? 'insight-card--snapshot-empty' : ''}">
+                <div class="insight-card__title">Current Profile Snapshot</div>
+                ${showEmptyState ? `
+                    <div class="profile-summary__empty-state">
+                        <h4>Live Preview</h4>
+                        <p>Start filling out the business profile. This dashboard updates in real time and keeps your saved summary after submission.</p>
+                    </div>
+                ` : ''}
+                <div class="profile-summary">
+                    <div class="summary-item">
+                        <strong>Business Name:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.businessName, 'Your company name')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Industry:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.industry, 'Select an industry')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Company Size:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.companySize, 'Choose company size')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Annual Revenue:</strong>
+                        <span>${revenueMarkup}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Continent:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.continent, 'Select a continent')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Country:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.country, 'Optional country')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Region:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.region, 'Optional region')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Marketing Goals:</strong>
+                        <span>${goalsMarkup}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Budget:</strong>
+                        <span>${budgetMarkup}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Target Audience:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.targetAudience, 'Describe your ideal customer')}</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Website:</strong>
+                        <span>${formatProfileSummaryValue(safeProfile.websiteLink, 'Add your website URL')}</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+    `;
+}
+
+function renderBusinessProfileSummary(profile, options = {}) {
+    renderInsightsDashboard(profile, options);
+}
+
+function updateBusinessProfilePreview() {
+    const draftProfile = getBusinessProfileFormData();
+    renderBusinessProfileSummary(draftProfile, { showEmptyState: true });
 }
 
 function setupAdminApiKeysListeners() {
@@ -1378,51 +1711,7 @@ function getStructuredLocationPayload() {
 }
 
 function displayProfileSummary(profile) {
-    const summaryCard = document.getElementById('profileSummary');
-    const summaryContent = document.getElementById('profileSummaryContent');
-    
-    if (!summaryCard || !summaryContent) return;
-    
-    const summaryHTML = `
-        <div class="profile-summary">
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Business Name:</strong> ${profile.businessName}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Industry:</strong> ${profile.industry}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Company Size:</strong> ${profile.companySize}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Annual Revenue:</strong> $${profile.revenue.toLocaleString()}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Continent:</strong> ${profile.continent || 'N/A'}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Country:</strong> ${profile.country || 'N/A'}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Region:</strong> ${profile.region || 'N/A'}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Marketing Goals:</strong> ${profile.marketingGoals.join(', ')}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Budget:</strong> $${profile.budget.toLocaleString()}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Target Audience:</strong> ${profile.targetAudience}
-            </div>
-            <div class="summary-item" style="margin-bottom: 12px;">
-                <strong>Website:</strong> ${profile.websiteLink || ''}
-            </div>
-        </div>
-    `;
-    
-    summaryContent.innerHTML = summaryHTML;
-    summaryCard.style.display = 'block';
+    renderBusinessProfileSummary(profile, { showEmptyState: true });
 }
 
 // AI Strategy Generator Functions
@@ -3976,6 +4265,11 @@ function loadDataFromStorage() {
         }
     } catch (error) {
         console.warn('Could not load data from localStorage:', error);
+    }
+    if (appData.businessProfile) {
+        renderBusinessProfileSummary(appData.businessProfile, { showEmptyState: true });
+    } else {
+        updateBusinessProfilePreview();
     }
     updateStrategyLaunchButtonState();
     updateProfileCTAState();
