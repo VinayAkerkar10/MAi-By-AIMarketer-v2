@@ -1,11 +1,15 @@
 // Global data storage
 let appData = {
     currentUserRole: null,
+    currentOrganizationId: null,
     businessProfile: null,
     generatedStrategy: null,
     currentStrategyId: null,
     reviewCampaignId: null,
     adminApiKeys: [],
+    adminUsers: [],
+    adminLicenses: [],
+    adminOrganizations: [],
     scrapedLeads: [],
     enrichedData: [],
     campaigns: [],
@@ -74,6 +78,11 @@ let leadLocationState = {
     place_id: null,
 };
 let adminApiKeysLoaded = false;
+let adminUsersLoaded = false;
+let adminLicensesLoaded = false;
+let adminOrganizationsLoaded = false;
+let currentAdminSection = 'users';
+let adminModalSubmitHandler = null;
 let enrichmentPreviewState = {
     columns: [],
     preview: [],
@@ -720,20 +729,32 @@ async function loadCurrentUserContext() {
     try {
         const response = await apiRequest('/api/auth/me');
         const role = String(response?.user?.role || '').trim().toLowerCase();
+        const organizationId = String(response?.user?.organization_id || '').trim();
         appData.currentUserRole = role || null;
+        appData.currentOrganizationId = organizationId || null;
     } catch (error) {
         console.error('Failed to load current user context:', error);
         appData.currentUserRole = null;
+        appData.currentOrganizationId = null;
     }
 }
 
-function isAdminUser() {
+function isSuperAdminUser() {
+    return appData.currentUserRole === 'super_admin';
+}
+
+function isOrgAdminUser() {
     return appData.currentUserRole === 'admin';
+}
+
+function isAdminUser() {
+    return isSuperAdminUser() || isOrgAdminUser();
 }
 
 function applyAdminVisibility() {
     const adminTab = document.getElementById('adminApiKeysTab');
     const adminModule = document.getElementById('admin-api-keys');
+    const orgTabBtn = document.getElementById('adminOrganizationsTabBtn');
     const canAccessAdmin = isAdminUser();
 
     if (adminTab) {
@@ -741,6 +762,9 @@ function applyAdminVisibility() {
     }
     if (adminModule && !canAccessAdmin) {
         adminModule.classList.add('hidden');
+    }
+    if (orgTabBtn) {
+        orgTabBtn.classList.toggle('hidden', !isSuperAdminUser());
     }
 }
 
@@ -833,7 +857,8 @@ function handleModuleSpecialInit(moduleId) {
             populateTemplateLibrary();
             break;
         case 'admin-api-keys':
-            loadAdminApiKeys();
+            setupAdminDashboardListeners();
+            showAdminSection(currentAdminSection);
             break;
     }
 }
@@ -980,11 +1005,13 @@ function setupEventListeners() {
     updateLogoutButtonVisibility();
     updateProfileCTAState();
     setupAdminApiKeysListeners();
+    setupAdminDashboardListeners();
 
     // Modal close functionality
     document.addEventListener('click', function(e) {
         if (e.target.classList.contains('modal__overlay')) {
             closeModal();
+            closeAdminCrudModal();
         }
     });
 }
@@ -1583,6 +1610,694 @@ async function disableAdminApiKey(keyId) {
         console.error('Failed to disable API key:', error);
         setAdminApiKeysFeedback(error.message || 'Failed to disable API key.', 'error');
         showErrorMessage(error.message || 'Failed to disable API key.');
+    }
+}
+
+function setAdminSectionLoading(sectionKey, isLoading) {
+    const loaderMap = {
+        users: 'adminUsersLoader',
+        licenses: 'adminLicensesLoader',
+        organizations: 'adminOrganizationsLoader',
+    };
+    const loader = document.getElementById(loaderMap[sectionKey] || '');
+    if (loader) {
+        loader.classList.toggle('hidden', !isLoading);
+    }
+}
+
+function setAdminSectionFeedback(sectionKey, message, type = 'info') {
+    const feedbackMap = {
+        users: 'adminUsersFeedback',
+        licenses: 'adminLicensesFeedback',
+        organizations: 'adminOrganizationsFeedback',
+    };
+    const feedback = document.getElementById(feedbackMap[sectionKey] || '');
+    if (!feedback) return;
+    if (!message) {
+        feedback.className = 'hidden';
+        feedback.textContent = '';
+        return;
+    }
+    feedback.className = `alert alert--${type}`;
+    feedback.textContent = message;
+}
+
+function getRoleOptionsHtml(includeSuperAdmin = false, selectedRole = 'user') {
+    const roles = includeSuperAdmin ? ['super_admin', 'admin', 'user'] : ['admin', 'user'];
+    return roles.map((role) => `
+        <option value="${role}" ${String(selectedRole || '').toLowerCase() === role ? 'selected' : ''}>${role}</option>
+    `).join('');
+}
+
+function getCurrentAdminScopedOrganizationId() {
+    return appData.currentOrganizationId || '';
+}
+
+function getOrganizationOptionsHtml(selectedOrganizationId = '') {
+    const rows = Array.isArray(appData.adminOrganizations) ? appData.adminOrganizations : [];
+    return rows.map((org) => `
+        <option value="${org.id}" ${String(selectedOrganizationId || '') === String(org.id || '') ? 'selected' : ''}>
+            ${String(org.name || org.id || '')}
+        </option>
+    `).join('');
+}
+
+async function ensureAdminOrganizationsLoaded() {
+    if (!isSuperAdminUser()) return;
+    if (!adminOrganizationsLoaded) {
+        await loadAdminOrganizations(true);
+    }
+}
+
+function showAdminSection(sectionKey = 'users') {
+    currentAdminSection = sectionKey;
+    const sectionMap = {
+        users: 'adminSectionUsers',
+        licenses: 'adminSectionLicenses',
+        'api-keys': 'adminSectionApiKeys',
+        organizations: 'adminSectionOrganizations',
+    };
+
+    Object.entries(sectionMap).forEach(([key, sectionId]) => {
+        const section = document.getElementById(sectionId);
+        const tab = document.querySelector(`[data-admin-section="${key}"]`);
+        const shouldShow = key === sectionKey && (key !== 'organizations' || isSuperAdminUser());
+        if (section) section.classList.toggle('hidden', !shouldShow);
+        if (tab) tab.classList.toggle('active', shouldShow);
+    });
+
+    if (sectionKey === 'users') {
+        loadAdminUsers();
+    } else if (sectionKey === 'licenses') {
+        loadAdminLicenses();
+    } else if (sectionKey === 'api-keys') {
+        loadAdminApiKeys();
+    } else if (sectionKey === 'organizations' && isSuperAdminUser()) {
+        loadAdminOrganizations();
+    }
+}
+
+function openAdminCrudModal({ title, bodyHtml, submitLabel = 'Save', onSubmit, hideSubmit = false }) {
+    const modal = document.getElementById('adminCrudModal');
+    const titleEl = document.getElementById('adminCrudModalTitle');
+    const bodyEl = document.getElementById('adminCrudModalBody');
+    const submitBtn = document.getElementById('adminCrudModalSubmitBtn');
+    if (!modal || !titleEl || !bodyEl || !submitBtn) return;
+
+    titleEl.textContent = title;
+    bodyEl.innerHTML = bodyHtml;
+    submitBtn.textContent = submitLabel;
+    submitBtn.classList.toggle('hidden', hideSubmit);
+    adminModalSubmitHandler = typeof onSubmit === 'function' ? onSubmit : null;
+    modal.classList.remove('hidden');
+}
+
+function closeAdminCrudModal() {
+    const modal = document.getElementById('adminCrudModal');
+    const bodyEl = document.getElementById('adminCrudModalBody');
+    if (bodyEl) bodyEl.innerHTML = '';
+    if (modal) modal.classList.add('hidden');
+    adminModalSubmitHandler = null;
+}
+
+async function handleAdminCrudModalSubmit() {
+    if (typeof adminModalSubmitHandler === 'function') {
+        await adminModalSubmitHandler();
+    }
+}
+
+function setupAdminDashboardListeners() {
+    document.querySelectorAll('[data-admin-section]').forEach((button) => {
+        if (button.dataset.bound) return;
+        button.addEventListener('click', () => {
+            const nextSection = String(button.dataset.adminSection || 'users');
+            if (nextSection === 'organizations' && !isSuperAdminUser()) return;
+            showAdminSection(nextSection);
+        });
+        button.dataset.bound = '1';
+    });
+
+    const bindings = [
+        ['adminUserAddBtn', openCreateUserModal],
+        ['adminLicenseAddBtn', openCreateLicenseModal],
+        ['adminOrganizationAddBtn', openCreateOrganizationModal],
+        ['adminCrudModalCloseBtn', closeAdminCrudModal],
+        ['adminCrudModalCancelBtn', closeAdminCrudModal],
+        ['adminCrudModalSubmitBtn', handleAdminCrudModalSubmit],
+    ];
+
+    bindings.forEach(([id, handler]) => {
+        const element = document.getElementById(id);
+        if (element && !element.dataset.bound) {
+            element.addEventListener('click', handler);
+            element.dataset.bound = '1';
+        }
+    });
+}
+
+async function loadAdminUsers(force = false) {
+    if (!isAdminUser()) return;
+    if (adminUsersLoaded && !force) {
+        renderAdminUsersTable();
+        return;
+    }
+
+    setAdminSectionLoading('users', true);
+    setAdminSectionFeedback('users', '', 'info');
+    try {
+        const path = isSuperAdminUser()
+            ? '/api/admin/users'
+            : `/api/admin/users?organization_id=${encodeURIComponent(getCurrentAdminScopedOrganizationId())}`;
+        const response = await apiRequest(path, 'GET');
+        appData.adminUsers = Array.isArray(response?.users) ? response.users : [];
+        adminUsersLoaded = true;
+        renderAdminUsersTable();
+    } catch (error) {
+        console.error('Failed to load admin users:', error);
+        setAdminSectionFeedback('users', error.message || 'Failed to load users.', 'error');
+    } finally {
+        setAdminSectionLoading('users', false);
+    }
+}
+
+function renderAdminUsersTable() {
+    const tbody = document.getElementById('adminUsersTableBody');
+    if (!tbody) return;
+    const rows = Array.isArray(appData.adminUsers) ? appData.adminUsers : [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No users found.</td></tr>';
+        return;
+    }
+
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(row.user_id || '')}</td>
+            <td>${escapeHtml(row.email || '')}</td>
+            <td>${escapeHtml(row.role || '')}</td>
+            <td><span class="status ${row.is_active ? 'status--success' : 'status--warning'}">${row.is_active ? 'active' : 'inactive'}</span></td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="btn btn--sm btn--secondary admin-user-edit-btn" data-id="${escapeHtml(row.id || '')}">Edit</button>
+                <button class="btn btn--sm btn--outline admin-user-role-btn" data-id="${escapeHtml(row.id || '')}">Role</button>
+                <button class="btn btn--sm btn--outline admin-user-password-btn" data-id="${escapeHtml(row.id || '')}">Reset Password</button>
+                <button class="btn btn--sm btn--outline admin-user-delete-btn" data-id="${escapeHtml(row.id || '')}">Delete</button>
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.querySelectorAll('.admin-user-edit-btn').forEach((button) => {
+        button.addEventListener('click', () => openEditUserModal(button.dataset.id));
+    });
+    tbody.querySelectorAll('.admin-user-role-btn').forEach((button) => {
+        button.addEventListener('click', () => openChangeUserRoleModal(button.dataset.id));
+    });
+    tbody.querySelectorAll('.admin-user-password-btn').forEach((button) => {
+        button.addEventListener('click', () => openResetPasswordModal(button.dataset.id));
+    });
+    tbody.querySelectorAll('.admin-user-delete-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (!window.confirm('Deactivate this user?')) return;
+            await deleteAdminUser(button.dataset.id);
+        });
+    });
+}
+
+async function openCreateUserModal() {
+    await ensureAdminOrganizationsLoaded();
+    const includeSuperAdmin = isSuperAdminUser();
+    const orgField = isSuperAdminUser() ? `
+        <div class="form-group">
+            <label class="form-label" for="adminUserOrganizationId">Organization</label>
+            <select class="form-control" id="adminUserOrganizationId" required>
+                ${getOrganizationOptionsHtml()}
+            </select>
+        </div>
+    ` : '';
+
+    openAdminCrudModal({
+        title: 'Create User',
+        submitLabel: 'Create User',
+        bodyHtml: `
+            <div class="grid grid--two-col">
+                ${orgField}
+                <div class="form-group">
+                    <label class="form-label" for="adminUserUserId">User ID</label>
+                    <input type="text" class="form-control" id="adminUserUserId" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminUserEmail">Email</label>
+                    <input type="email" class="form-control" id="adminUserEmail">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminUserRole">Role</label>
+                    <select class="form-control" id="adminUserRole" required>
+                        ${getRoleOptionsHtml(includeSuperAdmin, 'user')}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminUserPassword">Password</label>
+                    <input type="password" class="form-control" id="adminUserPassword" required>
+                </div>
+            </div>
+        `,
+        onSubmit: async () => {
+            const payload = {
+                organization_id: isSuperAdminUser()
+                    ? String(document.getElementById('adminUserOrganizationId')?.value || '').trim()
+                    : getCurrentAdminScopedOrganizationId(),
+                user_id: String(document.getElementById('adminUserUserId')?.value || '').trim(),
+                email: String(document.getElementById('adminUserEmail')?.value || '').trim() || null,
+                role: String(document.getElementById('adminUserRole')?.value || 'user').trim(),
+                password: String(document.getElementById('adminUserPassword')?.value || '')
+            };
+            await apiRequest('/api/admin/users', 'POST', payload);
+            closeAdminCrudModal();
+            setAdminSectionFeedback('users', 'User created successfully.', 'success');
+            await loadAdminUsers(true);
+        }
+    });
+}
+
+function openEditUserModal(userId) {
+    const row = (appData.adminUsers || []).find((item) => String(item.id) === String(userId));
+    if (!row) return;
+
+    openAdminCrudModal({
+        title: `Edit User: ${row.user_id}`,
+        submitLabel: 'Save Changes',
+        bodyHtml: `
+            <div class="grid grid--two-col">
+                <div class="form-group">
+                    <label class="form-label" for="adminEditUserUserId">User ID</label>
+                    <input type="text" class="form-control" id="adminEditUserUserId" value="${String(row.user_id || '').replace(/"/g, '&quot;')}" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminEditUserEmail">Email</label>
+                    <input type="email" class="form-control" id="adminEditUserEmail" value="${String(row.email || '').replace(/"/g, '&quot;')}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminEditUserStatus">Status</label>
+                    <select class="form-control" id="adminEditUserStatus">
+                        <option value="true" ${row.is_active ? 'selected' : ''}>active</option>
+                        <option value="false" ${!row.is_active ? 'selected' : ''}>inactive</option>
+                    </select>
+                </div>
+            </div>
+        `,
+        onSubmit: async () => {
+            const payload = {
+                user_id: String(document.getElementById('adminEditUserUserId')?.value || '').trim(),
+                email: String(document.getElementById('adminEditUserEmail')?.value || '').trim() || null,
+                is_active: String(document.getElementById('adminEditUserStatus')?.value || 'true') === 'true'
+            };
+            await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}`, 'PUT', payload);
+            closeAdminCrudModal();
+            setAdminSectionFeedback('users', 'User updated successfully.', 'success');
+            await loadAdminUsers(true);
+        }
+    });
+}
+
+function openChangeUserRoleModal(userId) {
+    const row = (appData.adminUsers || []).find((item) => String(item.id) === String(userId));
+    if (!row) return;
+
+    openAdminCrudModal({
+        title: `Change Role: ${row.user_id}`,
+        submitLabel: 'Update Role',
+        bodyHtml: `
+            <div class="form-group">
+                <label class="form-label" for="adminChangeUserRole">Role</label>
+                <select class="form-control" id="adminChangeUserRole">
+                    ${getRoleOptionsHtml(isSuperAdminUser(), row.role || 'user')}
+                </select>
+            </div>
+        `,
+        onSubmit: async () => {
+            await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/role`, 'PATCH', {
+                role: String(document.getElementById('adminChangeUserRole')?.value || 'user').trim()
+            });
+            closeAdminCrudModal();
+            setAdminSectionFeedback('users', 'User role updated successfully.', 'success');
+            await loadAdminUsers(true);
+        }
+    });
+}
+
+function openResetPasswordModal(userId) {
+    const row = (appData.adminUsers || []).find((item) => String(item.id) === String(userId));
+    if (!row) return;
+
+    openAdminCrudModal({
+        title: `Reset Password: ${row.user_id}`,
+        submitLabel: 'Reset Password',
+        bodyHtml: `
+            <div class="form-group">
+                <label class="form-label" for="adminResetUserPassword">New Password</label>
+                <input type="password" class="form-control" id="adminResetUserPassword" required>
+            </div>
+        `,
+        onSubmit: async () => {
+            await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, 'PATCH', {
+                password: String(document.getElementById('adminResetUserPassword')?.value || '')
+            });
+            closeAdminCrudModal();
+            setAdminSectionFeedback('users', 'Password reset successfully.', 'success');
+        }
+    });
+}
+
+async function deleteAdminUser(userId) {
+    try {
+        await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}`, 'DELETE');
+        setAdminSectionFeedback('users', 'User deactivated successfully.', 'success');
+        await loadAdminUsers(true);
+    } catch (error) {
+        console.error('Failed to deactivate user:', error);
+        setAdminSectionFeedback('users', error.message || 'Failed to deactivate user.', 'error');
+    }
+}
+
+async function loadAdminLicenses(force = false) {
+    if (!isAdminUser()) return;
+    if (adminLicensesLoaded && !force) {
+        renderAdminLicensesTable();
+        return;
+    }
+
+    setAdminSectionLoading('licenses', true);
+    setAdminSectionFeedback('licenses', '', 'info');
+    try {
+        const path = isSuperAdminUser()
+            ? '/api/admin/licenses'
+            : `/api/admin/licenses?organization_id=${encodeURIComponent(getCurrentAdminScopedOrganizationId())}`;
+        const response = await apiRequest(path, 'GET');
+        appData.adminLicenses = Array.isArray(response?.licenses) ? response.licenses : [];
+        adminLicensesLoaded = true;
+        renderAdminLicensesTable();
+    } catch (error) {
+        console.error('Failed to load admin licenses:', error);
+        setAdminSectionFeedback('licenses', error.message || 'Failed to load licenses.', 'error');
+    } finally {
+        setAdminSectionLoading('licenses', false);
+    }
+}
+
+function renderAdminLicensesTable() {
+    const tbody = document.getElementById('adminLicensesTableBody');
+    if (!tbody) return;
+    const rows = Array.isArray(appData.adminLicenses) ? appData.adminLicenses : [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6">No licenses found.</td></tr>';
+        return;
+    }
+
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(row.organization_id || '')}</td>
+            <td>${escapeHtml(row.type || '')}</td>
+            <td>${escapeHtml(row.status || '')}</td>
+            <td>${escapeHtml(row.period || '')}</td>
+            <td>${escapeHtml(row.max_users || '')}</td>
+            <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="btn btn--sm btn--secondary admin-license-edit-btn" data-id="${escapeHtml(row.id || '')}">Edit</button>
+                <button class="btn btn--sm btn--outline admin-license-status-btn" data-id="${escapeHtml(row.id || '')}">Status</button>
+                <button class="btn btn--sm btn--outline admin-license-delete-btn" data-id="${escapeHtml(row.id || '')}">Delete</button>
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.querySelectorAll('.admin-license-edit-btn').forEach((button) => {
+        button.addEventListener('click', () => openEditLicenseModal(button.dataset.id));
+    });
+    tbody.querySelectorAll('.admin-license-status-btn').forEach((button) => {
+        button.addEventListener('click', () => openUpdateLicenseStatusModal(button.dataset.id));
+    });
+    tbody.querySelectorAll('.admin-license-delete-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (!window.confirm('Delete this license?')) return;
+            await deleteAdminLicense(button.dataset.id);
+        });
+    });
+}
+
+async function openCreateLicenseModal() {
+    await ensureAdminOrganizationsLoaded();
+    const orgField = isSuperAdminUser() ? `
+        <div class="form-group">
+            <label class="form-label" for="adminLicenseOrganizationId">Organization</label>
+            <select class="form-control" id="adminLicenseOrganizationId" required>
+                ${getOrganizationOptionsHtml()}
+            </select>
+        </div>
+    ` : '';
+
+    openAdminCrudModal({
+        title: 'Create License',
+        submitLabel: 'Create License',
+        bodyHtml: `
+            <div class="grid grid--two-col">
+                ${orgField}
+                <div class="form-group">
+                    <label class="form-label" for="adminLicenseType">License Type</label>
+                    <select class="form-control" id="adminLicenseType">
+                        <option value="strategy_only">strategy_only</option>
+                        <option value="strategy_leads">strategy_leads</option>
+                        <option value="full_suite">full_suite</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminLicensePeriod">Period</label>
+                    <select class="form-control" id="adminLicensePeriod">
+                        <option value="monthly">monthly</option>
+                        <option value="yearly">yearly</option>
+                        <option value="one_time">one_time</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminLicenseMaxUsers">Max Users</label>
+                    <input type="number" class="form-control" id="adminLicenseMaxUsers" min="1" value="1">
+                </div>
+            </div>
+        `,
+        onSubmit: async () => {
+            const payload = {
+                organization_id: isSuperAdminUser()
+                    ? String(document.getElementById('adminLicenseOrganizationId')?.value || '').trim()
+                    : getCurrentAdminScopedOrganizationId(),
+                license_type: String(document.getElementById('adminLicenseType')?.value || 'strategy_only').trim(),
+                period: String(document.getElementById('adminLicensePeriod')?.value || 'monthly').trim(),
+                max_users: Number(document.getElementById('adminLicenseMaxUsers')?.value || 1) || 1
+            };
+            await apiRequest('/api/admin/licenses', 'POST', payload);
+            closeAdminCrudModal();
+            setAdminSectionFeedback('licenses', 'License created successfully.', 'success');
+            await loadAdminLicenses(true);
+        }
+    });
+}
+
+function openEditLicenseModal(licenseId) {
+    const row = (appData.adminLicenses || []).find((item) => String(item.id) === String(licenseId));
+    if (!row) return;
+
+    openAdminCrudModal({
+        title: `Edit License: ${row.id}`,
+        submitLabel: 'Save Changes',
+        bodyHtml: `
+            <div class="grid grid--two-col">
+                <div class="form-group">
+                    <label class="form-label" for="adminEditLicenseType">License Type</label>
+                    <select class="form-control" id="adminEditLicenseType">
+                        <option value="strategy_only" ${row.type === 'strategy_only' ? 'selected' : ''}>strategy_only</option>
+                        <option value="strategy_leads" ${row.type === 'strategy_leads' ? 'selected' : ''}>strategy_leads</option>
+                        <option value="full_suite" ${row.type === 'full_suite' ? 'selected' : ''}>full_suite</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminEditLicensePeriod">Period</label>
+                    <select class="form-control" id="adminEditLicensePeriod">
+                        <option value="monthly" ${row.period === 'monthly' ? 'selected' : ''}>monthly</option>
+                        <option value="yearly" ${row.period === 'yearly' ? 'selected' : ''}>yearly</option>
+                        <option value="one_time" ${row.period === 'one_time' ? 'selected' : ''}>one_time</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminEditLicenseMaxUsers">Max Users</label>
+                    <input type="number" class="form-control" id="adminEditLicenseMaxUsers" min="1" value="${Number(row.max_users || 1)}">
+                </div>
+            </div>
+        `,
+        onSubmit: async () => {
+            await apiRequest(`/api/admin/licenses/${encodeURIComponent(licenseId)}`, 'PUT', {
+                license_type: String(document.getElementById('adminEditLicenseType')?.value || row.type).trim(),
+                period: String(document.getElementById('adminEditLicensePeriod')?.value || row.period).trim(),
+                max_users: Number(document.getElementById('adminEditLicenseMaxUsers')?.value || row.max_users || 1) || 1
+            });
+            closeAdminCrudModal();
+            setAdminSectionFeedback('licenses', 'License updated successfully.', 'success');
+            await loadAdminLicenses(true);
+        }
+    });
+}
+
+function openUpdateLicenseStatusModal(licenseId) {
+    const row = (appData.adminLicenses || []).find((item) => String(item.id) === String(licenseId));
+    if (!row) return;
+
+    openAdminCrudModal({
+        title: 'Update License Status',
+        submitLabel: 'Update Status',
+        bodyHtml: `
+            <div class="form-group">
+                <label class="form-label" for="adminLicenseStatusValue">Status</label>
+                <select class="form-control" id="adminLicenseStatusValue">
+                    <option value="active" ${row.status === 'active' ? 'selected' : ''}>active</option>
+                    <option value="suspended" ${row.status === 'suspended' ? 'selected' : ''}>suspended</option>
+                    <option value="cancelled" ${row.status === 'cancelled' ? 'selected' : ''}>cancelled</option>
+                </select>
+            </div>
+        `,
+        onSubmit: async () => {
+            await apiRequest(`/api/admin/licenses/${encodeURIComponent(licenseId)}/status`, 'PATCH', {
+                status: String(document.getElementById('adminLicenseStatusValue')?.value || row.status).trim()
+            });
+            closeAdminCrudModal();
+            setAdminSectionFeedback('licenses', 'License status updated successfully.', 'success');
+            await loadAdminLicenses(true);
+        }
+    });
+}
+
+async function deleteAdminLicense(licenseId) {
+    try {
+        await apiRequest(`/api/admin/licenses/${encodeURIComponent(licenseId)}`, 'DELETE');
+        setAdminSectionFeedback('licenses', 'License deleted successfully.', 'success');
+        await loadAdminLicenses(true);
+    } catch (error) {
+        console.error('Failed to delete license:', error);
+        setAdminSectionFeedback('licenses', error.message || 'Failed to delete license.', 'error');
+    }
+}
+
+async function loadAdminOrganizations(force = false) {
+    if (!isSuperAdminUser()) return;
+    if (adminOrganizationsLoaded && !force) {
+        renderAdminOrganizationsTable();
+        return;
+    }
+
+    setAdminSectionLoading('organizations', true);
+    setAdminSectionFeedback('organizations', '', 'info');
+    try {
+        const response = await apiRequest('/api/admin/organizations', 'GET');
+        appData.adminOrganizations = Array.isArray(response?.organizations) ? response.organizations : [];
+        adminOrganizationsLoaded = true;
+        renderAdminOrganizationsTable();
+    } catch (error) {
+        console.error('Failed to load organizations:', error);
+        setAdminSectionFeedback('organizations', error.message || 'Failed to load organizations.', 'error');
+    } finally {
+        setAdminSectionLoading('organizations', false);
+    }
+}
+
+function renderAdminOrganizationsTable() {
+    const tbody = document.getElementById('adminOrganizationsTableBody');
+    if (!tbody) return;
+    const rows = Array.isArray(appData.adminOrganizations) ? appData.adminOrganizations : [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No organizations found.</td></tr>';
+        return;
+    }
+
+    const escapeHtml = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    tbody.innerHTML = rows.map((row) => `
+        <tr>
+            <td>${escapeHtml(row.name || '')}</td>
+            <td>${escapeHtml(row.domain || '')}</td>
+            <td>${escapeHtml(row.status || '')}</td>
+            <td>${escapeHtml(row.created_at ? new Date(row.created_at).toLocaleString() : '')}</td>
+            <td><button class="btn btn--sm btn--secondary admin-org-view-btn" data-id="${escapeHtml(row.id || '')}">View</button></td>
+        </tr>
+    `).join('');
+
+    tbody.querySelectorAll('.admin-org-view-btn').forEach((button) => {
+        button.addEventListener('click', () => openOrganizationDetailsModal(button.dataset.id));
+    });
+}
+
+function openCreateOrganizationModal() {
+    if (!isSuperAdminUser()) return;
+    openAdminCrudModal({
+        title: 'Create Organization',
+        submitLabel: 'Create Organization',
+        bodyHtml: `
+            <div class="grid grid--two-col">
+                <div class="form-group">
+                    <label class="form-label" for="adminOrganizationName">Organization Name</label>
+                    <input type="text" class="form-control" id="adminOrganizationName" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="adminOrganizationDomain">Domain</label>
+                    <input type="text" class="form-control" id="adminOrganizationDomain">
+                </div>
+            </div>
+        `,
+        onSubmit: async () => {
+            await apiRequest('/api/admin/organizations', 'POST', {
+                name: String(document.getElementById('adminOrganizationName')?.value || '').trim(),
+                domain: String(document.getElementById('adminOrganizationDomain')?.value || '').trim() || null
+            });
+            closeAdminCrudModal();
+            setAdminSectionFeedback('organizations', 'Organization created successfully.', 'success');
+            await loadAdminOrganizations(true);
+        }
+    });
+}
+
+async function openOrganizationDetailsModal(orgId) {
+    if (!isSuperAdminUser()) return;
+    try {
+        const response = await apiRequest(`/api/admin/organizations/${encodeURIComponent(orgId)}`, 'GET');
+        const org = response?.organization || {};
+        const licenses = Array.isArray(response?.licenses) ? response.licenses : [];
+        openAdminCrudModal({
+            title: `Organization: ${org.name || orgId}`,
+            hideSubmit: true,
+            bodyHtml: `
+                <div class="admin-org-detail">
+                    <p><strong>ID:</strong> ${String(org.id || '')}</p>
+                    <p><strong>Name:</strong> ${String(org.name || '')}</p>
+                    <p><strong>Domain:</strong> ${String(org.domain || '')}</p>
+                    <p><strong>Status:</strong> ${String(org.status || '')}</p>
+                    <p><strong>Users:</strong> ${Number(response?.users_count || 0)}</p>
+                    <p><strong>Licenses:</strong> ${licenses.length}</p>
+                </div>
+            `
+        });
+    } catch (error) {
+        console.error('Failed to load organization details:', error);
+        setAdminSectionFeedback('organizations', error.message || 'Failed to load organization details.', 'error');
     }
 }
 

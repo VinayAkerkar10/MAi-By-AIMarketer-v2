@@ -1113,6 +1113,77 @@ select.form-control {
   overflow-x: auto;
 }
 
+.admin-dashboard {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: var(--space-16);
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  background: var(--color-surface);
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-12);
+  height: fit-content;
+}
+
+.admin-sidebar__tab {
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--color-text);
+  border-radius: var(--radius-base);
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
+}
+
+.admin-sidebar__tab:hover,
+.admin-sidebar__tab.active {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.32);
+}
+
+.admin-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.admin-content > .admin-section {
+  width: 100%;
+  max-width: 100%;
+}
+
+.admin-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.admin-section__header h3 {
+  margin: 0;
+}
+
+.admin-section__header p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+}
+
+.admin-loader {
+  margin-bottom: 12px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -1549,11 +1620,15 @@ select.form-control {
 }
 
 .modal__overlay {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-20);
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
 }
@@ -1564,6 +1639,7 @@ select.form-control {
   box-shadow: var(--shadow-lg);
   max-width: 600px;
   width: 90%;
+  margin: 0 auto;
   max-height: 80vh;
   overflow-y: auto;
   position: relative;
@@ -1641,6 +1717,20 @@ select.form-control {
 
 /* Responsive Design */
 @media (max-width: 768px) {
+  .admin-dashboard {
+    grid-template-columns: 1fr;
+    max-width: 100%;
+  }
+
+  .admin-sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .admin-sidebar__tab {
+    flex: 0 0 auto;
+  }
+
   .header__content {
     flex-direction: column;
     gap: var(--space-16);
@@ -1670,6 +1760,10 @@ select.form-control {
   .modal__content {
     width: 95%;
     max-height: 90vh;
+  }
+
+  .modal__overlay {
+    padding: var(--space-12);
   }
   
   .metrics-grid {

@@ -35,7 +35,7 @@
                 <button class="nav__tab" data-module="campaign-manager">Multi-Channel Campaign Manager</button>
                 <button class="nav__tab" data-module="analytics">Analytics & Reporting</button>
                 <button class="nav__tab" data-module="templates">Template Library</button>
-                <button class="nav__tab hidden" data-module="admin-api-keys" id="adminApiKeysTab">API Key Management</button>
+                <button class="nav__tab hidden" data-module="admin-api-keys" id="adminApiKeysTab">Admin Dashboard</button>
             </div>
         </div>
     </nav>
@@ -693,75 +693,195 @@
                 </div>
             </div>
 
-            <!-- Module 8: Admin API Key Management -->
+            <!-- Module 8: Admin Dashboard -->
             <div class="module hidden" id="admin-api-keys">
                 <div class="module__header">
-                    <h2>API Key Management</h2>
-                    <p>Manage organization provider API keys (Admin only)</p>
+                    <h2>Admin Dashboard</h2>
+                    <p>Manage users, licenses, API keys, and organizations based on your role.</p>
                 </div>
 
-                <div class="card">
-                    <div class="card__header" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-                        <h3>Configured Provider Keys</h3>
-                        <button class="btn btn--primary btn--sm" id="adminApiKeyAddBtn">Add API Key</button>
-                    </div>
-                    <div class="card__body">
-                        <div id="adminApiKeysLoader" class="hidden" style="margin-bottom: 12px;">
-                            <div class="loading-spinner"></div>
-                            <p>Loading API keys...</p>
-                        </div>
+                <div class="admin-dashboard">
+                    <aside class="admin-sidebar">
+                        <button class="admin-sidebar__tab active" data-admin-section="users" id="adminUsersTabBtn">Users</button>
+                        <button class="admin-sidebar__tab" data-admin-section="licenses" id="adminLicensesTabBtn">Licenses</button>
+                        <button class="admin-sidebar__tab" data-admin-section="api-keys" id="adminApiKeysSectionBtn">API Keys</button>
+                        <button class="admin-sidebar__tab hidden" data-admin-section="organizations" id="adminOrganizationsTabBtn">Organizations</button>
+                    </aside>
 
-                        <div id="adminApiKeysFeedback" class="hidden" style="margin-bottom: 12px;"></div>
-
-                        <form id="adminApiKeyForm" class="hidden" style="margin-bottom: 16px;">
-                            <input type="hidden" id="adminApiKeyId">
-                            <div class="grid grid--two-col">
-                                <div class="form-group">
-                                    <label class="form-label" for="adminProviderName">Provider</label>
-                                    <select class="form-control" id="adminProviderName" required>
-                                        <option value="github">github</option>
-                                        <option value="google_maps">google_maps</option>
-                                        <option value="linkedin">linkedin</option>
-                                        <option value="volza">volza</option>
-                                    </select>
+                    <div class="admin-content">
+                        <section class="card admin-section" id="adminSectionUsers">
+                            <div class="card__header admin-section__header">
+                                <div>
+                                    <h3>Users Management</h3>
+                                    <p>Create, update, disable, and secure user accounts.</p>
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="adminApiKeyStatus">Status</label>
-                                    <select class="form-control" id="adminApiKeyStatus" required>
-                                        <option value="active">active</option>
-                                        <option value="disabled">disabled</option>
-                                    </select>
+                                <button class="btn btn--primary btn--sm" id="adminUserAddBtn">Add User</button>
+                            </div>
+                            <div class="card__body">
+                                <div id="adminUsersLoader" class="hidden admin-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading users...</p>
+                                </div>
+                                <div id="adminUsersFeedback" class="hidden" style="margin-bottom: 12px;"></div>
+                                <div class="table-responsive">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>User ID</th>
+                                                <th>Email</th>
+                                                <th>Role</th>
+                                                <th>Status</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminUsersTableBody">
+                                            <tr>
+                                                <td colspan="5">No users loaded.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label" for="adminApiKeyValue">API Key</label>
-                                <input type="password" class="form-control" id="adminApiKeyValue" placeholder="Enter provider API key">
-                            </div>
-                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <button type="submit" class="btn btn--primary" id="adminApiKeySaveBtn">Save API Key</button>
-                                <button type="button" class="btn btn--secondary" id="adminApiKeyCancelBtn">Cancel</button>
-                            </div>
-                        </form>
+                        </section>
 
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Provider</th>
-                                        <th>API Key</th>
-                                        <th>Status</th>
-                                        <th>Created By</th>
-                                        <th>Updated At</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="adminApiKeysTableBody">
-                                    <tr>
-                                        <td colspan="6">No API keys configured.</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                        <section class="card admin-section hidden" id="adminSectionLicenses">
+                            <div class="card__header admin-section__header">
+                                <div>
+                                    <h3>License Management</h3>
+                                    <p>Manage license plans, status, and access limits.</p>
+                                </div>
+                                <button class="btn btn--primary btn--sm" id="adminLicenseAddBtn">Add License</button>
+                            </div>
+                            <div class="card__body">
+                                <div id="adminLicensesLoader" class="hidden admin-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading licenses...</p>
+                                </div>
+                                <div id="adminLicensesFeedback" class="hidden" style="margin-bottom: 12px;"></div>
+                                <div class="table-responsive">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Org ID</th>
+                                                <th>Type</th>
+                                                <th>Status</th>
+                                                <th>Period</th>
+                                                <th>Max Users</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminLicensesTableBody">
+                                            <tr>
+                                                <td colspan="6">No licenses loaded.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="card admin-section hidden" id="adminSectionApiKeys">
+                            <div class="card__header admin-section__header">
+                                <div>
+                                    <h3>Configured Provider Keys</h3>
+                                    <p>Manage organization provider API keys.</p>
+                                </div>
+                                <button class="btn btn--primary btn--sm" id="adminApiKeyAddBtn">Add API Key</button>
+                            </div>
+                            <div class="card__body">
+                                <div id="adminApiKeysLoader" class="hidden admin-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading API keys...</p>
+                                </div>
+
+                                <div id="adminApiKeysFeedback" class="hidden" style="margin-bottom: 12px;"></div>
+
+                                <form id="adminApiKeyForm" class="hidden" style="margin-bottom: 16px;">
+                                    <input type="hidden" id="adminApiKeyId">
+                                    <div class="grid grid--two-col">
+                                        <div class="form-group">
+                                            <label class="form-label" for="adminProviderName">Provider</label>
+                                            <select class="form-control" id="adminProviderName" required>
+                                                <option value="github">github</option>
+                                                <option value="google_maps">google_maps</option>
+                                                <option value="linkedin">linkedin</option>
+                                                <option value="volza">volza</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="adminApiKeyStatus">Status</label>
+                                            <select class="form-control" id="adminApiKeyStatus" required>
+                                                <option value="active">active</option>
+                                                <option value="disabled">disabled</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="adminApiKeyValue">API Key</label>
+                                        <input type="password" class="form-control" id="adminApiKeyValue" placeholder="Enter provider API key">
+                                    </div>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                        <button type="submit" class="btn btn--primary" id="adminApiKeySaveBtn">Save API Key</button>
+                                        <button type="button" class="btn btn--secondary" id="adminApiKeyCancelBtn">Cancel</button>
+                                    </div>
+                                </form>
+
+                                <div class="table-responsive">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Provider</th>
+                                                <th>API Key</th>
+                                                <th>Status</th>
+                                                <th>Created By</th>
+                                                <th>Updated At</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminApiKeysTableBody">
+                                            <tr>
+                                                <td colspan="6">No API keys configured.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="card admin-section hidden" id="adminSectionOrganizations">
+                            <div class="card__header admin-section__header">
+                                <div>
+                                    <h3>Organization Management</h3>
+                                    <p>Platform-level organization controls for super admins.</p>
+                                </div>
+                                <button class="btn btn--primary btn--sm" id="adminOrganizationAddBtn">Add Organization</button>
+                            </div>
+                            <div class="card__body">
+                                <div id="adminOrganizationsLoader" class="hidden admin-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading organizations...</p>
+                                </div>
+                                <div id="adminOrganizationsFeedback" class="hidden" style="margin-bottom: 12px;"></div>
+                                <div class="table-responsive">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>Name</th>
+                                                <th>Domain</th>
+                                                <th>Status</th>
+                                                <th>Created</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminOrganizationsTableBody">
+                                            <tr>
+                                                <td colspan="5">No organizations loaded.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
                     </div>
                 </div>
             </div>
@@ -782,6 +902,22 @@
                 <div class="modal__footer">
                     <button class="btn btn--secondary" onclick="closeModal()">Close</button>
                     <button class="btn btn--primary" id="useTemplateBtn">Use Template</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="adminCrudModal">
+        <div class="modal__overlay">
+            <div class="modal__content">
+                <div class="modal__header">
+                    <h3 id="adminCrudModalTitle">Admin Action</h3>
+                    <button class="modal__close" id="adminCrudModalCloseBtn">&times;</button>
+                </div>
+                <div class="modal__body" id="adminCrudModalBody"></div>
+                <div class="modal__footer">
+                    <button class="btn btn--secondary" id="adminCrudModalCancelBtn">Cancel</button>
+                    <button class="btn btn--primary" id="adminCrudModalSubmitBtn">Save</button>
                 </div>
             </div>
         </div>

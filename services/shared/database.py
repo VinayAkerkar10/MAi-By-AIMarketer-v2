@@ -53,6 +53,7 @@ class LicensePeriod(str, enum.Enum):
     ONE_TIME = "one_time"
 
 class UserRole(str, enum.Enum):
+    SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
     USER = "user"
 

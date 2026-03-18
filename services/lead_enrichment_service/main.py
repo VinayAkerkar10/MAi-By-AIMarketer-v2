@@ -609,7 +609,7 @@ async def _scrape_leads_task(
                     db.query(User)
                     .filter(
                         User.organization_id == org_id,
-                        User.role == UserRole.ADMIN,
+                        User.role.in_([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
                         User.is_active == True,  # noqa: E712
                         User.email.isnot(None),
                     )

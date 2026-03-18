@@ -6,7 +6,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 from passlib.context import CryptContext
 import os
 
@@ -149,13 +149,46 @@ async def get_current_user(
 async def get_current_admin(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> Dict[str, Any]:
-    """Ensure current user is an admin"""
-    if current_user["role"] != UserRole.ADMIN.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
-    return current_user
+    """Backward-compatible alias for admin-capable users."""
+    dependency = require_role([UserRole.SUPER_ADMIN, UserRole.ADMIN])
+    return await dependency(current_user)
+
+
+def require_role(allowed_roles: Iterable[UserRole | str]):
+    """Reusable role gate for admin and super admin permission layers."""
+    normalized_roles = {
+        role.value if isinstance(role, UserRole) else str(role).strip().lower()
+        for role in allowed_roles
+    }
+
+    async def _require_role_dependency(
+        current_user: Dict[str, Any] = Depends(get_current_user)
+    ) -> Dict[str, Any]:
+        current_role = str(current_user.get("role") or "").strip().lower()
+        if current_role not in normalized_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+        return current_user
+
+    return _require_role_dependency
+
+
+async def get_current_super_admin(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """Allow only platform-level super admins."""
+    dependency = require_role([UserRole.SUPER_ADMIN])
+    return await dependency(current_user)
+
+
+async def get_current_org_admin(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """Allow organization admins and platform super admins."""
+    dependency = require_role([UserRole.SUPER_ADMIN, UserRole.ADMIN])
+    return await dependency(current_user)
 
 # ===== LICENSE VALIDATION =====
 
