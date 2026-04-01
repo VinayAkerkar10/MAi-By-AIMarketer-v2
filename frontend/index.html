@@ -61,19 +61,18 @@
                                 
                                 <div class="form-group">
                                     <label class="form-label" for="industry">Industry</label>
-                                    <select class="form-control" id="industry" required>
-                                        <option value="">Select Industry</option>
-                                    </select>
+                                    <div class="autosuggest">
+                                        <input type="text" class="form-control autosuggest__input" id="industry" placeholder="Select Industry" autocomplete="off" required>
+                                        <div id="industrySuggestions" class="autosuggest__menu hidden" role="listbox" aria-label="Industry suggestions"></div>
+                                    </div>
                                 </div>
                                 
                                 <div class="form-group">
                                     <label class="form-label" for="companySize">Company Size</label>
-                                    <select class="form-control" id="companySize" required>
-                                        <option value="">Select Size</option>
-                                        <option value="Small">Small (1-50 employees)</option>
-                                        <option value="Medium">Medium (51-500 employees)</option>
-                                        <option value="Large">Large (500+ employees)</option>
-                                    </select>
+                                    <div class="autosuggest">
+                                        <input type="text" class="form-control autosuggest__input" id="companySize" placeholder="Select Size" autocomplete="off" required>
+                                        <div id="companySizeSuggestions" class="autosuggest__menu hidden" role="listbox" aria-label="Company size suggestions"></div>
+                                    </div>
                                 </div>
                                 
                                 <div class="form-group">
@@ -83,16 +82,18 @@
                                 
                                 <div class="form-group">
                                     <label class="form-label" for="continent">Continent</label>
-                                    <select class="form-control" id="continent" required>
-                                        <option value="">Select Continent</option>
-                                    </select>
+                                    <div class="autosuggest">
+                                        <input type="text" class="form-control autosuggest__input" id="continent" placeholder="Select Continent" autocomplete="off" required>
+                                        <div id="continentSuggestions" class="autosuggest__menu hidden" role="listbox" aria-label="Continent suggestions"></div>
+                                    </div>
                                 </div>
 
                                 <div class="form-group">
                                     <label class="form-label" for="country">Country (Optional)</label>
-                                    <select class="form-control" id="country">
-                                        <option value="">Select Country (Optional)</option>
-                                    </select>
+                                    <div class="autosuggest">
+                                        <input type="text" class="form-control autosuggest__input" id="country" placeholder="Select Country (Optional)" autocomplete="off">
+                                        <div id="countrySuggestions" class="autosuggest__menu hidden" role="listbox" aria-label="Country suggestions"></div>
+                                    </div>
                                 </div>
 
                                 <div class="form-group">
@@ -251,17 +252,24 @@
                                 <div class="form-group">
                                     <label class="form-label" for="location">Location</label>
                                     <div style="display: flex; gap: 8px; align-items: center;">
-                                        <input type="text" class="form-control" id="location" placeholder="e.g., San Francisco, CA" autocomplete="off" required>
+                                        <input type="text" class="form-control" id="location" placeholder="e.g., San Francisco, CA" autocomplete="off">
                                         <button type="button" class="btn btn--secondary btn--sm" id="useCurrentLocationBtn">Use Current Location</button>
                                     </div>
                                     <div id="locationSuggestions" class="hidden" style="margin-top: 6px; border: 1px solid #ddd; border-radius: 8px; padding: 8px; background: #fff;"></div>
                                 </div>
+
+                                <div class="form-group">
+                                    <label class="form-label" for="websiteUrl">Website URL</label>
+                                    <input type="url" class="form-control" id="websiteUrl" placeholder="https://example.com">
+                                    <small class="form-help">Optional. If provided with extension data, scraping uses the browser-based provider.</small>
+                                </div>
                                 
                                 <div class="form-group">
                                     <label class="form-label" for="businessType">Business Type/Category</label>
-                                    <select class="form-control" id="businessType" required>
-                                        <option value="">Select Category</option>
-                                    </select>
+                                    <div class="autosuggest">
+                                        <input type="text" class="form-control autosuggest__input" id="businessType" placeholder="Select Category" autocomplete="off">
+                                        <div id="businessTypeSuggestions" class="autosuggest__menu hidden" role="listbox" aria-label="Business type suggestions"></div>
+                                    </div>
                                 </div>
                                 
                                 <div class="form-group">
@@ -298,6 +306,11 @@
                                         </label>
                                     </div>
                                 </div>
+
+                                <div id="extensionPayloadStatus" class="hidden status status--success" style="margin-bottom: 12px;"></div>
+                                <div id="extensionPreview" class="extension-preview hidden" style="margin-bottom: 12px;"></div>
+                                <button type="button" class="btn btn--secondary btn--sm hidden" id="togglePreviewDetails" style="margin-bottom: 12px;">View Details</button>
+                                <div id="extensionDetails" class="hidden" style="display:none; margin-bottom: 12px;"></div>
                                 
                                 <button type="submit" class="btn btn--primary btn--full-width">Start Scraping</button>
                             </form>
@@ -324,11 +337,10 @@
                                     <table class="table" id="leadsTable">
                                         <thead>
                                             <tr>
-                                                <th>Business Name</th>
-                                                <th>Address</th>
-                                                <th>Phone</th>
+                                                <th>Name</th>
                                                 <th>Website</th>
-                                                <th>Rating</th>
+                                                <th>Email</th>
+                                                <th>Phone</th>
                                                 <th>Category</th>
                                             </tr>
                                         </thead>

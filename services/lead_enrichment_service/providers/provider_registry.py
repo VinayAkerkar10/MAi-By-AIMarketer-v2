@@ -1,6 +1,7 @@
 from typing import Optional
 
 from .lead_source_provider import LeadSourceProvider
+from .browser_extension_provider import BrowserExtensionProvider
 from .github_provider import GitHubProvider
 from .google_maps_provider import GoogleMapsProvider
 from .linkedin_provider import LinkedInProvider
@@ -13,6 +14,7 @@ def get_provider(source_name: str) -> Optional[LeadSourceProvider]:
         "google_maps": GoogleMapsProvider,
         "linkedin": LinkedInProvider,
         "volza": VolzaProvider,
+        "browser_extension": BrowserExtensionProvider,
     }
 
     provider_class = providers.get(str(source_name or "").strip().lower())

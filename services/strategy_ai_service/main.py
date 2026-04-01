@@ -100,7 +100,7 @@ async def get_continent_master(
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.STRATEGY_AI)),
     db: Session = Depends(get_db)
 ):
-    rows = db.query(ContinentMaster).order_by(ContinentMaster.id.asc()).all()
+    rows = db.query(ContinentMaster).order_by(ContinentMaster.name.asc()).all()
     return {
         "continents": [
             {

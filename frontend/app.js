@@ -77,6 +77,7 @@ let leadLocationState = {
     lng: null,
     place_id: null,
 };
+let browserExtensionPayloadState = null;
 let adminApiKeysLoaded = false;
 let adminUsersLoaded = false;
 let adminLicensesLoaded = false;
@@ -88,6 +89,7 @@ let enrichmentPreviewState = {
     preview: [],
     mapping: {}
 };
+let autosuggestRegistry = {};
 
 const CONTINENT_COUNTRY_MAP = {
     "Asia": ["India", "Indonesia", "Malaysia", "Singapore", "Thailand", "Vietnam", "Philippines", "Japan", "South Korea", "China"],
@@ -114,6 +116,582 @@ const DEFAULT_BUSINESS_CATEGORIES = [
     "Consulting",
     "Marketing Agency",
 ];
+
+const COMPANY_SIZE_OPTIONS = ["Large", "Medium", "Small"];
+
+function debounce(fn, wait = 300) {
+    let timeoutId = null;
+    return function debounced(...args) {
+        if (timeoutId) {
+            window.clearTimeout(timeoutId);
+        }
+        timeoutId = window.setTimeout(() => {
+            fn.apply(this, args);
+        }, wait);
+    };
+}
+
+function sortStringsAsc(values) {
+    return [...new Set((Array.isArray(values) ? values : [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function normalizeAutosuggestOptions(options) {
+    const normalized = (Array.isArray(options) ? options : [])
+        .map((option) => {
+            if (option && typeof option === 'object') {
+                const value = String(option.value ?? '').trim();
+                const label = String(option.label ?? option.value ?? '').trim();
+                return value || label ? { value: value || label, label: label || value } : null;
+            }
+
+            const text = String(option || '').trim();
+            return text ? { value: text, label: text } : null;
+        })
+        .filter(Boolean);
+
+    const deduped = [];
+    const seen = new Set();
+    normalized.forEach((option) => {
+        const key = `${option.value}::${option.label}`.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        deduped.push({
+            value: option.value,
+            label: option.label,
+            searchText: option.label.toLowerCase(),
+            valueText: option.value.toLowerCase(),
+        });
+    });
+
+    return deduped.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function escapeRegExp(value) {
+    return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightMatch(text, query) {
+    const sourceText = String(text ?? '');
+    const searchQuery = String(query ?? '').trim();
+    if (!searchQuery) {
+        return escapeHtml(sourceText);
+    }
+
+    const pattern = new RegExp(`(${escapeRegExp(searchQuery)})`, 'ig');
+    return escapeHtml(sourceText).replace(pattern, '<mark class="autosuggest__match">$1</mark>');
+}
+
+function findAutosuggestOption(options, value) {
+    const normalizedValue = String(value || '').trim().toLowerCase();
+    if (!normalizedValue) return null;
+    return (Array.isArray(options) ? options : []).find((option) => (
+        option.searchText === normalizedValue || option.valueText === normalizedValue
+    )) || null;
+}
+
+function getCountryOptionsForContinent(continentName) {
+    const safeContinent = String(continentName || '').trim();
+    return sortStringsAsc(CONTINENT_COUNTRY_MAP[safeContinent] || []);
+}
+
+function getAutosuggestLiveRegion() {
+    let region = document.getElementById('autosuggestStatus');
+    if (region) return region;
+
+    region = document.createElement('div');
+    region.id = 'autosuggestStatus';
+    region.className = 'sr-only';
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(region);
+    return region;
+}
+
+function announceAutosuggestMessage(message) {
+    const region = getAutosuggestLiveRegion();
+    region.textContent = String(message || '');
+}
+
+function setAutosuggestExpanded(instance, expanded) {
+    if (!instance?.input) return;
+    instance.input.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
+
+function updateAutosuggestAriaActiveDescendant(instance) {
+    if (!instance?.input) return;
+
+    const activeOption = instance.visibleOptions?.[instance.activeIndex];
+    if (activeOption?.domId) {
+        instance.input.setAttribute('aria-activedescendant', activeOption.domId);
+        return;
+    }
+
+    instance.input.removeAttribute('aria-activedescendant');
+}
+
+function setAutosuggestLoading(target, isLoading) {
+    const instance = typeof target === 'string' ? autosuggestRegistry[target] : target;
+    if (!instance?.spinner) return;
+
+    if (instance.loadingTimer) {
+        window.clearTimeout(instance.loadingTimer);
+        instance.loadingTimer = null;
+    }
+
+    if (isLoading) {
+        instance.loadingTimer = window.setTimeout(() => {
+            instance.spinner.classList.remove('hidden');
+            if (instance.wrapper) {
+                instance.wrapper.classList.add('autosuggest--loading');
+            }
+            instance.input?.setAttribute('aria-busy', 'true');
+            instance.loadingTimer = null;
+        }, 150);
+        return;
+    }
+
+    instance.spinner.classList.add('hidden');
+    if (instance.wrapper) {
+        instance.wrapper.classList.remove('autosuggest--loading');
+    }
+    instance.input?.setAttribute('aria-busy', 'false');
+}
+
+function hideAutosuggestMenu(instance) {
+    if (!instance?.panel) return;
+    instance.panel.innerHTML = '';
+    instance.panel.classList.add('hidden');
+    instance.activeIndex = -1;
+    instance.visibleOptions = [];
+    setAutosuggestExpanded(instance, false);
+    updateAutosuggestAriaActiveDescendant(instance);
+}
+
+function renderAutosuggestMenu(instance, query = '') {
+    if (!instance?.panel) return;
+
+    const normalizedQuery = String(query || '').trim().toLowerCase();
+    const options = Array.isArray(instance.options) ? instance.options : [];
+    const visibleOptions = normalizedQuery
+        ? options.filter((option) => option.searchText.includes(normalizedQuery) || option.valueText.includes(normalizedQuery))
+        : options.slice(0, instance.defaultVisibleCount || 8);
+
+    instance.visibleOptions = visibleOptions.map((option, index) => ({
+        ...option,
+        domId: `${instance.panel.id}-option-${index}`
+    }));
+    instance.activeIndex = visibleOptions.length ? 0 : -1;
+
+    if (!instance.visibleOptions.length) {
+        instance.panel.innerHTML = '<div class="autosuggest__empty" role="status">No results found</div>';
+        instance.panel.classList.remove('hidden');
+        setAutosuggestExpanded(instance, true);
+        updateAutosuggestAriaActiveDescendant(instance);
+        announceAutosuggestMessage(`No results found for ${query || 'this field'}.`);
+        return;
+    }
+
+    instance.panel.innerHTML = instance.visibleOptions
+        .map((option, index) => `
+            <button
+                type="button"
+                class="autosuggest__option${index === instance.activeIndex ? ' autosuggest__option--active' : ''}"
+                data-autosuggest-value="${escapeHtml(option.value)}"
+                id="${option.domId}"
+                role="option"
+                aria-selected="${index === instance.activeIndex ? 'true' : 'false'}"
+            >${highlightMatch(option.label, query)}</button>
+        `)
+        .join('');
+    instance.panel.classList.remove('hidden');
+    setAutosuggestExpanded(instance, true);
+    updateAutosuggestAriaActiveDescendant(instance);
+    announceAutosuggestMessage(`${instance.visibleOptions.length} suggestion${instance.visibleOptions.length === 1 ? '' : 's'} available.`);
+}
+
+function updateAutosuggestActiveOption(instance) {
+    if (!instance?.panel) return;
+    const items = instance.panel.querySelectorAll('.autosuggest__option');
+    items.forEach((item, index) => {
+        const isActive = index === instance.activeIndex;
+        item.classList.toggle('autosuggest__option--active', isActive);
+        item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    updateAutosuggestAriaActiveDescendant(instance);
+}
+
+function selectAutosuggestOption(instance, option) {
+    if (!instance?.input || !option) return;
+    instance.input.value = option.label;
+    if (instance.select) {
+        instance.select.value = option.value;
+        instance.select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (typeof instance.onSelect === 'function') {
+        instance.onSelect(option.value, option);
+    }
+    announceAutosuggestMessage(`${option.label} selected.`);
+    hideAutosuggestMenu(instance);
+}
+
+function setAutosuggestValue(inputId, value) {
+    const instance = autosuggestRegistry[inputId];
+    if (!instance?.input) return;
+    const exactMatch = findAutosuggestOption(instance.options, value);
+    instance.input.value = exactMatch ? exactMatch.label : String(value || '').trim();
+    if (instance.select && exactMatch) {
+        instance.select.value = exactMatch.value;
+    }
+}
+
+function setAutosuggestOptions(inputId, options) {
+    const instance = autosuggestRegistry[inputId];
+    if (!instance) return;
+
+    instance.options = normalizeAutosuggestOptions(options);
+    const currentValue = String(instance.input?.value || '').trim();
+    const exactMatch = findAutosuggestOption(instance.options, currentValue);
+    if (currentValue && exactMatch) {
+        instance.input.value = exactMatch.label;
+        if (instance.select) {
+            instance.select.value = exactMatch.value;
+        }
+    }
+    if (!currentValue) {
+        hideAutosuggestMenu(instance);
+    }
+}
+
+function syncEnhancedSelectUI(selectOrId) {
+    const select = typeof selectOrId === 'string'
+        ? document.getElementById(selectOrId)
+        : selectOrId;
+    if (!(select instanceof HTMLSelectElement)) return;
+
+    const instance = autosuggestRegistry[select.id];
+    if (!instance?.input) return;
+
+    const options = Array.from(select.options).map((option) => ({
+        value: option.value,
+        label: option.textContent || option.label || option.value
+    }));
+    const suggestionOptions = options.filter((option) => String(option.value || '').trim() !== '');
+    instance.options = normalizeAutosuggestOptions(suggestionOptions);
+    instance.input.disabled = Boolean(select.disabled);
+    instance.input.required = Boolean(instance.originalRequired);
+    instance.panel.classList.toggle('hidden', true);
+
+    const emptyOption = options.find((option) => String(option.value || '').trim() === '');
+    if (emptyOption?.label) {
+        instance.input.placeholder = emptyOption.label;
+    }
+
+    const selectedOption = options.find((option) => String(option.value) === String(select.value));
+    instance.input.value = selectedOption && String(selectedOption.value || '').trim() !== ''
+        ? selectedOption.label
+        : '';
+    hideAutosuggestMenu(instance);
+}
+
+function initAutosuggestField(config) {
+    const input = document.getElementById(config.inputId);
+    const panel = document.getElementById(config.panelId);
+    if (!input || !panel) return;
+
+    const wrapper = input.closest('.autosuggest');
+    let spinner = wrapper?.querySelector('.autosuggest__spinner');
+    if (!spinner && wrapper) {
+        spinner = document.createElement('span');
+        spinner.className = 'autosuggest__spinner hidden';
+        spinner.setAttribute('aria-hidden', 'true');
+        wrapper.appendChild(spinner);
+    }
+
+    const instance = {
+        input,
+        panel,
+        wrapper,
+        spinner,
+        options: [],
+        visibleOptions: [],
+        activeIndex: -1,
+        defaultVisibleCount: config.defaultVisibleCount || 8,
+        onSelect: config.onSelect,
+        onInputChange: config.onInputChange,
+    };
+    autosuggestRegistry[config.inputId] = instance;
+
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', panel.id);
+    input.setAttribute('aria-busy', 'false');
+    panel.setAttribute('role', 'listbox');
+
+    const debouncedRender = debounce(() => {
+        renderAutosuggestMenu(instance, input.value);
+    }, 300);
+
+    if (!input.dataset.autosuggestBound) {
+        input.addEventListener('input', () => {
+            const exactMatch = findAutosuggestOption(instance.options, input.value);
+            if (instance.select) {
+                instance.select.value = exactMatch ? exactMatch.value : '';
+            }
+            if (typeof instance.onInputChange === 'function') {
+                instance.onInputChange(input.value);
+            }
+            debouncedRender();
+        });
+        input.addEventListener('focus', () => {
+            renderAutosuggestMenu(instance, input.value);
+        });
+        input.addEventListener('keydown', (event) => {
+            if (panel.classList.contains('hidden') && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+                renderAutosuggestMenu(instance, input.value);
+            }
+
+            if (event.key === 'ArrowDown') {
+                if (!instance.visibleOptions.length) return;
+                event.preventDefault();
+                instance.activeIndex = (instance.activeIndex + 1) % instance.visibleOptions.length;
+                updateAutosuggestActiveOption(instance);
+                return;
+            }
+
+            if (event.key === 'ArrowUp') {
+                if (!instance.visibleOptions.length) return;
+                event.preventDefault();
+                instance.activeIndex = (instance.activeIndex - 1 + instance.visibleOptions.length) % instance.visibleOptions.length;
+                updateAutosuggestActiveOption(instance);
+                return;
+            }
+
+            if (event.key === 'Enter') {
+                const activeOption = instance.visibleOptions[instance.activeIndex];
+                if (activeOption) {
+                    event.preventDefault();
+                    selectAutosuggestOption(instance, activeOption);
+                }
+                return;
+            }
+
+            if (event.key === 'Escape') {
+                hideAutosuggestMenu(instance);
+            }
+        });
+        input.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (instance.select) {
+                    const exactMatch = findAutosuggestOption(instance.options, input.value);
+                    if (exactMatch) {
+                        instance.input.value = exactMatch.label;
+                        instance.select.value = exactMatch.value;
+                    }
+                }
+                hideAutosuggestMenu(instance);
+            }, 150);
+        });
+        input.dataset.autosuggestBound = '1';
+    }
+
+    if (!panel.dataset.autosuggestBound) {
+        panel.addEventListener('mousedown', (event) => {
+            const button = event.target.closest('[data-autosuggest-value]');
+            if (!button) return;
+            event.preventDefault();
+            const option = findAutosuggestOption(instance.options, button.dataset.autosuggestValue);
+            if (option) {
+                selectAutosuggestOption(instance, option);
+            }
+        });
+        panel.dataset.autosuggestBound = '1';
+    }
+}
+
+function enhanceSelectToAutosuggest(selectId, config = {}) {
+    const select = document.getElementById(selectId);
+    if (!(select instanceof HTMLSelectElement) || select.dataset.autosuggestEnhanced) {
+        return;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'autosuggest autosuggest--enhanced';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control autosuggest__input';
+    input.id = `${selectId}Autosuggest`;
+    input.autocomplete = 'off';
+    input.disabled = select.disabled;
+    input.required = select.required;
+
+    const panel = document.createElement('div');
+    panel.id = `${selectId}Suggestions`;
+    panel.className = 'autosuggest__menu hidden';
+    panel.setAttribute('aria-label', config.ariaLabel || `${selectId} suggestions`);
+
+    select.insertAdjacentElement('afterend', wrapper);
+    wrapper.appendChild(input);
+    wrapper.appendChild(panel);
+
+    select.classList.add('autosuggest__native');
+    select.setAttribute('aria-hidden', 'true');
+    select.tabIndex = -1;
+    select.required = false;
+    select.dataset.autosuggestEnhanced = '1';
+
+    const label = document.querySelector(`label[for="${selectId}"]`);
+    if (label) {
+        label.setAttribute('for', input.id);
+    }
+
+    initAutosuggestField({
+        inputId: input.id,
+        panelId: panel.id,
+        defaultVisibleCount: config.defaultVisibleCount,
+        onSelect: (_value, option) => {
+            if (typeof config.onSelect === 'function') {
+                config.onSelect(option?.value ?? _value, option);
+            }
+        }
+    });
+
+    const instance = autosuggestRegistry[input.id];
+    if (instance) {
+        instance.select = select;
+        instance.originalRequired = input.required;
+        autosuggestRegistry[selectId] = instance;
+    }
+
+    syncEnhancedSelectUI(select);
+
+    const observer = new MutationObserver(() => {
+        syncEnhancedSelectUI(select);
+    });
+    observer.observe(select, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['disabled']
+    });
+
+    if (!select.dataset.autosuggestSyncBound) {
+        select.addEventListener('change', () => {
+            syncEnhancedSelectUI(select);
+        });
+        select.dataset.autosuggestSyncBound = '1';
+    }
+}
+
+function validateAutosuggestField(inputId, label, { required = false, options = [] } = {}) {
+    const input = document.getElementById(inputId);
+    if (!input) return true;
+
+    const value = String(input.value || '').trim();
+    if (!value) {
+        if (required) {
+            showErrorMessage(`${label} is required.`);
+            input.focus();
+            return false;
+        }
+        return true;
+    }
+
+    const exactMatch = findAutosuggestOption(normalizeAutosuggestOptions(options), value);
+    if (!exactMatch) {
+        showErrorMessage(`Please choose a valid ${label.toLowerCase()} from the suggestions.`);
+        input.focus();
+        return false;
+    }
+
+    input.value = exactMatch.value;
+    return true;
+}
+
+function validateBusinessProfileAutosuggestFields() {
+    const continentValue = String(document.getElementById('continent')?.value || '').trim();
+    const validations = [
+        validateAutosuggestField('industry', 'Industry', {
+            required: true,
+            options: businessCategoryMasterOptions.length ? businessCategoryMasterOptions : DEFAULT_BUSINESS_CATEGORIES
+        }),
+        validateAutosuggestField('companySize', 'Company Size', {
+            required: true,
+            options: COMPANY_SIZE_OPTIONS
+        }),
+        validateAutosuggestField('continent', 'Continent', {
+            required: true,
+            options: continentMasterOptions.length ? continentMasterOptions.map((row) => row.name) : ["Africa", "Asia", "Europe", "MENA", "North America", "South America"]
+        }),
+        validateAutosuggestField('country', 'Country', {
+            required: false,
+            options: getCountryOptionsForContinent(continentValue)
+        })
+    ];
+
+    return validations.every(Boolean);
+}
+
+function validateLeadScraperAutosuggestFields() {
+    const businessTypeInput = document.getElementById('businessType');
+    if (!businessTypeInput || !String(businessTypeInput.value || '').trim()) {
+        return true;
+    }
+
+    return validateAutosuggestField('businessType', 'Business Type/Category', {
+        required: false,
+        options: businessCategoryMasterOptions.length ? businessCategoryMasterOptions : DEFAULT_BUSINESS_CATEGORIES
+    });
+}
+
+function setupAutosuggestControls() {
+    initAutosuggestField({ inputId: 'industry', panelId: 'industrySuggestions' });
+    initAutosuggestField({ inputId: 'companySize', panelId: 'companySizeSuggestions' });
+    initAutosuggestField({
+        inputId: 'continent',
+        panelId: 'continentSuggestions',
+        onInputChange: (value) => {
+            const continentOptions = continentMasterOptions.length
+                ? continentMasterOptions.map((row) => row.name)
+                : ["Africa", "Asia", "Europe", "MENA", "North America", "South America"];
+            const exactMatch = findAutosuggestOption(normalizeAutosuggestOptions(continentOptions), value);
+            populateCountryDropdown(exactMatch ? exactMatch.value : '', '');
+        },
+        onSelect: (value) => {
+            populateCountryDropdown(value, '');
+        }
+    });
+    initAutosuggestField({ inputId: 'country', panelId: 'countrySuggestions' });
+    initAutosuggestField({ inputId: 'businessType', panelId: 'businessTypeSuggestions' });
+
+    enhanceSelectToAutosuggest('strategyHistorySelect', { ariaLabel: 'Strategy history suggestions' });
+    enhanceSelectToAutosuggest('strategyVersionSelect', { ariaLabel: 'Strategy version suggestions' });
+    enhanceSelectToAutosuggest('campaignObjective', { ariaLabel: 'Campaign objective suggestions' });
+    enhanceSelectToAutosuggest('campaignStrategy', { ariaLabel: 'Campaign strategy suggestions' });
+    enhanceSelectToAutosuggest('campaignStrategyVersion', { ariaLabel: 'Campaign strategy version suggestions' });
+    enhanceSelectToAutosuggest('audienceSource', { ariaLabel: 'Audience source suggestions' });
+    enhanceSelectToAutosuggest('analyticsModeSelect', { ariaLabel: 'Analytics view mode suggestions' });
+    enhanceSelectToAutosuggest('strategySelect', { ariaLabel: 'Analytics strategy suggestions' });
+    enhanceSelectToAutosuggest('templateCategory', { ariaLabel: 'Template category suggestions' });
+    enhanceSelectToAutosuggest('templateIndustry', { ariaLabel: 'Template industry suggestions' });
+    enhanceSelectToAutosuggest('adminProviderName', { ariaLabel: 'Provider suggestions' });
+    enhanceSelectToAutosuggest('adminApiKeyStatus', { ariaLabel: 'API key status suggestions' });
+
+    setAutosuggestOptions('companySize', COMPANY_SIZE_OPTIONS);
+}
 
 function redirectToLogin() {
     const currentPath = window.location.pathname || "";
@@ -233,6 +811,7 @@ function mapStrategyAnalyticsToUIFormat(strategyResponse) {
 }
 
 async function loadStrategyOptions() {
+    setAutosuggestLoading('strategySelect', true);
     try {
         const response = await apiRequest('/api/strategy/history');
         const rows = Array.isArray(response?.strategies) ? response.strategies : [];
@@ -252,6 +831,7 @@ async function loadStrategyOptions() {
                 ? strategyOptions.map((item) => `<option value="${item.id}">${item.label}</option>`).join('')
                 : '<option value="">No strategies available</option>';
             strategySelect.disabled = strategyOptions.length === 0;
+            syncEnhancedSelectUI(strategySelect);
         }
 
         if (strategyOptions.length > 0) {
@@ -259,17 +839,21 @@ async function loadStrategyOptions() {
                 selectedStrategyId = strategyOptions[0].id;
             }
             if (strategySelect) strategySelect.value = selectedStrategyId;
+            syncEnhancedSelectUI('strategySelect');
         } else {
             selectedStrategyId = "";
             if (analyticsMode === "strategy_performance") {
                 analyticsMode = "campaign_summary";
                 const modeSelect = document.getElementById('analyticsModeSelect');
                 if (modeSelect) modeSelect.value = analyticsMode;
+                syncEnhancedSelectUI('analyticsModeSelect');
             }
         }
     } catch (error) {
         console.error('Strategy options loading error:', error);
         strategyOptions = [];
+    } finally {
+        setAutosuggestLoading('strategySelect', false);
     }
 }
 
@@ -293,12 +877,14 @@ function syncAnalyticsControls() {
 
     if (modeSelect) {
         modeSelect.value = analyticsMode;
+        syncEnhancedSelectUI(modeSelect);
     }
     if (strategyWrapper) {
         strategyWrapper.style.display = analyticsMode === 'strategy_performance' ? '' : 'none';
     }
     if (strategySelect && selectedStrategyId) {
         strategySelect.value = selectedStrategyId;
+        syncEnhancedSelectUI(strategySelect);
     }
     if (strategyBadge) {
         strategyBadge.classList.toggle('hidden', analyticsMode !== 'strategy_performance');
@@ -509,6 +1095,7 @@ function normalizeApiLead(lead) {
         ...safeLead,
         businessName: safeLead.businessName || safeLead.business_name || safeLead.name || 'N/A',
         address: safeLead.address || safeLead.location || safeLead.formatted_address || 'N/A',
+        email: safeLead.email || 'N/A',
         phone: safeLead.phone || 'N/A',
         website: safeLead.website || safeLead.url || safeLead.html_url || 'N/A',
         rating: safeLead.rating ?? '-',
@@ -565,6 +1152,7 @@ document.addEventListener('DOMContentLoaded', function() {
         await loadCurrentUserContext();
         applyAdminVisibility();
         setupNavigation();
+        setupAutosuggestControls();
         setupEventListeners();
         await loadContinentMasterData();
         await loadBusinessCategoryMasterData();
@@ -619,32 +1207,42 @@ function initializeApp() {
 }
 
 async function loadContinentMasterData() {
+    setAutosuggestLoading('continent', true);
     try {
         const response = await apiRequest('/api/strategy/master/continents');
         const rows = Array.isArray(response?.continents) ? response.continents : [];
-        continentMasterOptions = rows
+        continentMasterOptions = sortStringsAsc(rows
             .map((row) => ({
                 id: row?.id,
                 name: String(row?.name || '').trim()
             }))
-            .filter((row) => row.name.length > 0);
+            .filter((row) => row.name.length > 0)
+            .map((row) => row.name))
+            .map((name, index) => ({ id: index + 1, name }));
     } catch (error) {
         console.error('Continent master loading error:', error);
         continentMasterOptions = [];
+    } finally {
+        setAutosuggestLoading('continent', false);
     }
     populateContinentDropdown();
 }
 
 async function loadBusinessCategoryMasterData() {
+    setAutosuggestLoading('industry', true);
+    setAutosuggestLoading('businessType', true);
     try {
         const response = await apiRequest('/api/strategy/master/business-categories');
         const rows = Array.isArray(response?.business_categories) ? response.business_categories : [];
-        businessCategoryMasterOptions = rows
+        businessCategoryMasterOptions = sortStringsAsc(rows
             .map((row) => String(row?.category_name || '').trim())
-            .filter((name) => name.length > 0);
+            .filter((name) => name.length > 0));
     } catch (error) {
         console.error('Business category master loading error:', error);
         businessCategoryMasterOptions = [];
+    } finally {
+        setAutosuggestLoading('industry', false);
+        setAutosuggestLoading('businessType', false);
     }
     populateBusinessCategoryDropdowns();
 }
@@ -658,64 +1256,48 @@ function populateBusinessCategoryDropdowns() {
 }
 
 function populateSingleCategoryDropdown(selectId, placeholder, options) {
-    const select = document.getElementById(selectId);
-    if (!select) return;
+    const input = document.getElementById(selectId);
+    if (!input) return;
 
-    const previousValue = String(select.value || '').trim();
-    select.innerHTML = `<option value="">${placeholder}</option>`;
+    input.placeholder = placeholder;
+    setAutosuggestOptions(selectId, options);
 
-    options.forEach((name) => {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
-    });
-
-    if (previousValue && options.includes(previousValue)) {
-        select.value = previousValue;
+    const previousValue = String(input.value || '').trim();
+    const exactMatch = findAutosuggestOption(normalizeAutosuggestOptions(options), previousValue);
+    if (exactMatch) {
+        input.value = exactMatch.value;
     }
 }
 
 function populateContinentDropdown() {
-    const continentSelect = document.getElementById('continent');
-    if (!continentSelect) return;
-
-    const previousValue = continentSelect.value || '';
-    continentSelect.innerHTML = '<option value="">Select Continent</option>';
+    const continentInput = document.getElementById('continent');
+    if (!continentInput) return;
 
     const options = continentMasterOptions.length
         ? continentMasterOptions.map((row) => row.name)
-        : ["Asia", "Africa", "Europe", "MENA", "North America", "South America"];
+        : sortStringsAsc(["Asia", "Africa", "Europe", "MENA", "North America", "South America"]);
 
-    options.forEach((name) => {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        continentSelect.appendChild(option);
-    });
-
-    if (previousValue && options.includes(previousValue)) {
-        continentSelect.value = previousValue;
-    }
+    continentInput.placeholder = 'Select Continent';
+    setAutosuggestOptions('continent', options);
 }
 
 function populateCountryDropdown(continentName, selectedCountry = '') {
-    const countrySelect = document.getElementById('country');
-    if (!countrySelect) return;
+    const countryInput = document.getElementById('country');
+    if (!countryInput) return;
 
-    const safeContinent = String(continentName || '').trim();
-    const countries = CONTINENT_COUNTRY_MAP[safeContinent] || [];
-    countrySelect.innerHTML = '<option value="">Select Country (Optional)</option>';
+    const countries = getCountryOptionsForContinent(continentName);
+    countryInput.placeholder = 'Select Country (Optional)';
+    setAutosuggestOptions('country', countries);
 
-    countries.forEach((country) => {
-        const option = document.createElement('option');
-        option.value = country;
-        option.textContent = country;
-        countrySelect.appendChild(option);
-    });
+    if (selectedCountry) {
+        const exactMatch = findAutosuggestOption(normalizeAutosuggestOptions(countries), selectedCountry);
+        countryInput.value = exactMatch ? exactMatch.value : '';
+        return;
+    }
 
-    if (selectedCountry && countries.includes(selectedCountry)) {
-        countrySelect.value = selectedCountry;
+    const currentValue = String(countryInput.value || '').trim();
+    if (currentValue && !findAutosuggestOption(normalizeAutosuggestOptions(countries), currentValue)) {
+        countryInput.value = '';
     }
 }
 
@@ -1020,6 +1602,10 @@ function setupEventListeners() {
 function handleBusinessProfileSubmit(e) {
     e.preventDefault();
     console.log('Business profile form submitted');
+
+    if (!validateBusinessProfileAutosuggestFields()) {
+        return;
+    }
     
     const businessName = document.getElementById('businessName').value;
     const industry = document.getElementById('industry').value;
@@ -1456,15 +2042,22 @@ function openAdminApiKeyForm(row = null) {
         saveBtn.textContent = 'Save API Key';
     }
 
+    syncEnhancedSelectUI(providerInput);
+    syncEnhancedSelectUI(statusInput);
+
     form.classList.remove('hidden');
 }
 
 function closeAdminApiKeyForm() {
     const form = document.getElementById('adminApiKeyForm');
+    const providerInput = document.getElementById('adminProviderName');
+    const statusInput = document.getElementById('adminApiKeyStatus');
     if (form) {
         form.classList.add('hidden');
         form.reset();
     }
+    syncEnhancedSelectUI(providerInput);
+    syncEnhancedSelectUI(statusInput);
 }
 
 function renderAdminApiKeysTable() {
@@ -2425,6 +3018,178 @@ function getStructuredLocationPayload() {
     };
 }
 
+function setBrowserExtensionPayload(payload) {
+    browserExtensionPayloadState = (payload && typeof payload === 'object') ? payload : null;
+    const statusEl = document.getElementById('extensionPayloadStatus');
+    if (!statusEl) return;
+
+    if (browserExtensionPayloadState) {
+        const keys = Object.keys(browserExtensionPayloadState);
+        statusEl.textContent = `Browser extension payload attached${keys.length ? ` (${keys.join(', ')})` : ''}.`;
+        statusEl.classList.remove('hidden');
+        renderExtensionPreview(browserExtensionPayloadState);
+    } else {
+        statusEl.textContent = '';
+        statusEl.classList.add('hidden');
+        renderExtensionPreview(null);
+    }
+}
+
+function extractPreviewData(payload) {
+    const safePayload = (payload && typeof payload === 'object') ? payload : {};
+    const unique = (items) => Array.from(new Set(items.filter(Boolean)));
+    const toDomain = (href) => {
+        try {
+            const normalized = String(href || '').trim();
+            if (!normalized) return null;
+            const url = new URL(normalized.startsWith('http') ? normalized : `https://${normalized}`);
+            return url.hostname.replace(/^www\./i, '');
+        } catch (_error) {
+            return null;
+        }
+    };
+
+    const websites = unique(
+        (Array.isArray(safePayload.links) ? safePayload.links : [])
+            .map((link) => (link && typeof link === 'object') ? toDomain(link.href) : null)
+    ).slice(0, 5);
+
+    const emails = unique(
+        (Array.isArray(safePayload.contacts) ? safePayload.contacts : [])
+            .map((contact) => (contact && typeof contact === 'object') ? String(contact.email || '').trim() : '')
+    ).slice(0, 5);
+
+    const phones = unique(
+        (Array.isArray(safePayload.contacts) ? safePayload.contacts : [])
+            .map((contact) => (contact && typeof contact === 'object') ? String(contact.phone || '').trim() : '')
+    ).slice(0, 5);
+
+    const names = unique(
+        (Array.isArray(safePayload.headings) ? safePayload.headings : [])
+            .map((heading) => String(heading || '').trim())
+            .filter((heading) => heading.length >= 3)
+    ).slice(0, 5);
+
+    return { websites, emails, phones, names };
+}
+
+function renderExtensionPreview(payload) {
+    const preview = document.getElementById('extensionPreview');
+    const details = document.getElementById('extensionDetails');
+    const toggleBtn = document.getElementById('togglePreviewDetails');
+    const escapePreviewHtml = (value) => String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    if (!preview || !details || !toggleBtn) return;
+
+    if (!payload || typeof payload !== 'object') {
+        preview.innerHTML = '';
+        details.innerHTML = '';
+        details.style.display = 'none';
+        details.classList.add('hidden');
+        toggleBtn.classList.add('hidden');
+        preview.classList.add('hidden');
+        return;
+    }
+
+    const previewData = extractPreviewData(payload);
+    const renderList = (items, emptyText) => {
+        if (!items.length) {
+            return `<li style="color:#9ca3af;">${escapePreviewHtml(emptyText)}</li>`;
+        }
+        return items.map((item) => `<li>${escapePreviewHtml(item)}</li>`).join('');
+    };
+
+    preview.innerHTML = `
+        <div style="padding:14px; background:linear-gradient(180deg, #0f172a 0%, #111827 100%); color:#f5f7fa; border-radius:12px;">
+            <strong style="display:block; margin-bottom:10px;">Scraped Data Preview</strong>
+            <div style="display:grid; gap:10px;">
+                <div>
+                    <div style="font-size:12px; text-transform:uppercase; color:#93c5fd; margin-bottom:4px;">Top Websites</div>
+                    <ul style="margin:0; padding-left:18px;">${renderList(previewData.websites, 'No website domains detected')}</ul>
+                </div>
+                <div>
+                    <div style="font-size:12px; text-transform:uppercase; color:#86efac; margin-bottom:4px;">Contacts</div>
+                    <ul style="margin:0; padding-left:18px;">${renderList([...previewData.emails, ...previewData.phones].slice(0, 5), 'No contacts detected')}</ul>
+                </div>
+                <div>
+                    <div style="font-size:12px; text-transform:uppercase; color:#fcd34d; margin-bottom:4px;">Business Names</div>
+                    <ul style="margin:0; padding-left:18px;">${renderList(previewData.names, 'No business names inferred')}</ul>
+                </div>
+            </div>
+        </div>
+    `;
+    preview.classList.remove('hidden');
+
+    details.innerHTML = `
+        <h4>Details</h4>
+        <div><strong>Top Websites:</strong> ${previewData.websites.length ? previewData.websites.map(escapePreviewHtml).join(', ') : 'None'}</div>
+        <div><strong>Emails:</strong> ${previewData.emails.length ? previewData.emails.map(escapePreviewHtml).join(', ') : 'None'}</div>
+        <div><strong>Phones:</strong> ${previewData.phones.length ? previewData.phones.map(escapePreviewHtml).join(', ') : 'None'}</div>
+        <div><strong>Business Names:</strong> ${previewData.names.length ? previewData.names.map(escapePreviewHtml).join(', ') : 'None'}</div>
+    `;
+    details.style.display = 'none';
+    details.classList.add('hidden');
+
+    toggleBtn.textContent = 'View Details';
+    toggleBtn.classList.remove('hidden');
+}
+
+window.setLeadExtensionPayload = function(payload) {
+    // Accept structured payloads from the browser extension without interrupting the UI flow.
+    if (!payload || typeof payload !== 'object') {
+        console.warn('Ignoring invalid browser extension payload:', payload);
+        return false;
+    }
+
+    console.log('Received browser extension payload:', payload);
+    window.leadExtensionPayload = payload;
+    setBrowserExtensionPayload(payload);
+
+    if (window.appData && typeof window.appData === 'object') {
+        window.appData.extensionPayload = payload;
+    }
+
+    const websiteUrlInput = document.getElementById('websiteUrl');
+    const websiteUrl = String(payload.website_url || '').trim();
+    if (websiteUrlInput && websiteUrl) {
+        websiteUrlInput.value = websiteUrl;
+    }
+
+    if (typeof showSuccessMessage === 'function') {
+        showSuccessMessage('Browser extension data attached.');
+    } else {
+        console.info('Browser extension data attached.');
+    }
+
+    return true;
+};
+
+window.clearLeadExtensionPayload = function() {
+    setBrowserExtensionPayload(null);
+};
+
+if (window.__MAI_EXTENSION_PAYLOAD__) {
+    setBrowserExtensionPayload(window.__MAI_EXTENSION_PAYLOAD__);
+}
+
+const togglePreviewDetailsBtn = document.getElementById('togglePreviewDetails');
+if (togglePreviewDetailsBtn && !togglePreviewDetailsBtn.dataset.bound) {
+    togglePreviewDetailsBtn.onclick = () => {
+        const el = document.getElementById('extensionDetails');
+        if (!el) return;
+        const isHidden = el.style.display === 'none' || el.classList.contains('hidden');
+        el.style.display = isHidden ? 'block' : 'none';
+        el.classList.toggle('hidden', !isHidden);
+        togglePreviewDetailsBtn.textContent = isHidden ? 'Hide Details' : 'View Details';
+    };
+    togglePreviewDetailsBtn.dataset.bound = '1';
+}
+
 function displayProfileSummary(profile) {
     renderBusinessProfileSummary(profile, { showEmptyState: true });
 }
@@ -2456,6 +3221,7 @@ function resetStrategyVersionDropdown(message = 'Select version') {
     if (!versionSelect) return;
     versionSelect.innerHTML = `<option value="">${message}</option>`;
     versionSelect.disabled = true;
+    syncEnhancedSelectUI(versionSelect);
 }
 
 async function loadStrategyHistoryOptions() {
@@ -2465,7 +3231,9 @@ async function loadStrategyHistoryOptions() {
     const requestVersion = ++strategyHistoryRequestVersion;
     historySelect.disabled = true;
     historySelect.innerHTML = '<option value="">Loading strategies...</option>';
+    syncEnhancedSelectUI(historySelect);
     resetStrategyVersionDropdown();
+    setAutosuggestLoading('strategyHistorySelect', true);
 
     try {
         const response = await apiRequest('/api/strategy/history');
@@ -2478,6 +3246,7 @@ async function loadStrategyHistoryOptions() {
             historySelect.innerHTML = '<option value="">No saved strategies</option>';
             historySelect.disabled = true;
             appData.currentStrategyId = null;
+            syncEnhancedSelectUI(historySelect);
             return;
         }
 
@@ -2493,6 +3262,7 @@ async function loadStrategyHistoryOptions() {
             historySelect.appendChild(option);
         });
         historySelect.disabled = false;
+        syncEnhancedSelectUI(historySelect);
 
         const optionValues = Array.from(historySelect.options)
             .map((opt) => String(opt.value || '').trim())
@@ -2504,6 +3274,7 @@ async function loadStrategyHistoryOptions() {
             historySelect.value = nextId;
             appData.currentStrategyId = nextId;
             saveDataToStorage();
+            syncEnhancedSelectUI(historySelect);
         } else {
             appData.currentStrategyId = null;
         }
@@ -2512,7 +3283,10 @@ async function loadStrategyHistoryOptions() {
         console.error('Strategy history loading error:', error);
         historySelect.innerHTML = '<option value="">Failed to load strategies</option>';
         historySelect.disabled = true;
+        syncEnhancedSelectUI(historySelect);
         resetStrategyVersionDropdown('Select version');
+    } finally {
+        setAutosuggestLoading('strategyHistorySelect', false);
     }
 }
 
@@ -2524,8 +3298,10 @@ async function handleStrategyHistoryChange(event) {
     saveDataToStorage();
 
     resetStrategyVersionDropdown('Loading versions...');
+    setAutosuggestLoading('strategyVersionSelect', true);
     if (!strategyId) {
         resetStrategyVersionDropdown();
+        setAutosuggestLoading('strategyVersionSelect', false);
         return;
     }
 
@@ -2551,10 +3327,13 @@ async function handleStrategyHistoryChange(event) {
             versionSelect.appendChild(option);
         });
         versionSelect.disabled = false;
+        syncEnhancedSelectUI(versionSelect);
     } catch (error) {
         if (requestVersion !== strategyHistoryRequestVersion) return;
         console.error('Strategy versions loading error:', error);
         resetStrategyVersionDropdown('Failed to load versions');
+    } finally {
+        setAutosuggestLoading('strategyVersionSelect', false);
     }
 }
 
@@ -2942,7 +3721,8 @@ function renderSourceResultsSummary(results = {}, summary = null) {
 
         if (isSuccess) {
             const leadCount = Array.isArray(sourceResult?.leads) ? sourceResult.leads.length : 0;
-            return `<div class="status status--success" style="margin-bottom: 8px;">${label}: ${leadCount} leads</div>`;
+            const suffix = source === 'browser_extension' ? 'clean leads' : 'leads';
+            return `<div class="status status--success" style="margin-bottom: 8px;">${label}: ${leadCount} ${suffix}</div>`;
         }
 
         const message = sourceResult?.message || 'Source failed.';
@@ -2963,29 +3743,43 @@ function renderSourceResultsSummary(results = {}, summary = null) {
 function handleLeadScraping(e) {
     e.preventDefault();
     console.log('Lead scraping form submitted');
+
+    if (!validateLeadScraperAutosuggestFields()) {
+        return;
+    }
     
     const location = getStructuredLocationPayload();
+    const websiteUrl = String(document.getElementById('websiteUrl')?.value || '').trim();
     const businessType = document.getElementById('businessType').value;
     const radius = document.getElementById('radius').value;
     const additionalFilters = document.getElementById('additionalFilters').value;
     const sources = getNormalizedSelectedSources();
+    const extensionPayload = browserExtensionPayloadState;
+    const hasBrowserContext = Boolean(websiteUrl || extensionPayload);
 
-    if (!String(location?.text || '').trim()) {
+    if (!hasBrowserContext && !String(location?.text || '').trim()) {
         showErrorMessage('Location is required.');
         return;
     }
 
-    if (sources.length === 0) {
+    if (!hasBrowserContext && !String(businessType || '').trim()) {
+        showErrorMessage('Business type is required.');
+        return;
+    }
+
+    if (!hasBrowserContext && sources.length === 0) {
         showErrorMessage('Please select at least one source.');
         return;
     }
     
     const searchParams = {
         location,
+        websiteUrl,
         businessType,
         radius,
         additionalFilters,
-        sources
+        sources,
+        extensionPayload
     };
     
     startLeadScraping(searchParams);
@@ -3012,10 +3806,12 @@ async function startLeadScraping(params) {
     try {
         const scrapeRequest = {
             location: params.location,
-            business_type: params.businessType,
+            business_type: params.businessType || 'Website Leads',
             radius: Number(params.radius) || 10,
             max_results: 25,
-            sources: Array.isArray(params.sources) ? params.sources : ['github']
+            sources: Array.isArray(params.sources) ? params.sources : ['github'],
+            website_url: params.websiteUrl || null,
+            extension_payload: params.extensionPayload || null
         };
 
         const startResponse = await apiRequest('/api/leads/scrape', 'POST', scrapeRequest);
@@ -3148,10 +3944,9 @@ function displayScrapedLeads(leads) {
         const lead = (leadRaw && typeof leadRaw === 'object') ? leadRaw : {};
 
         const businessName = getFirstAvailable(lead, ['business_name', 'businessName', 'name', 'login']);
-        const address = getFirstAvailable(lead, ['address', 'location', 'formatted_address']);
+        const email = formatValue(getFirstAvailable(lead, ['email'], 'N/A'));
         const phone = formatValue(getFirstAvailable(lead, ['phone', 'phones', 'contact_numbers']));
         const websiteValue = getFirstAvailable(lead, ['website', 'websites', 'url', 'html_url']);
-        const rating = getFirstAvailable(lead, ['rating', 'score', 'stars'], 'N/A');
         const category = getFirstAvailable(lead, ['category', 'business_type', 'type'], 'N/A');
         const source = String(getFirstAvailable(lead, ['source'], 'unknown')).toLowerCase();
         const sourceLabel = titleize(source);
@@ -3170,10 +3965,9 @@ function displayScrapedLeads(leads) {
                         ${renderLeadDetails(lead)}
                     </div>
                 </td>
-                <td>${formatValue(address)}</td>
-                <td>${phone}</td>
                 <td>${renderWebsite(websiteValue)}</td>
-                <td>${rating === 'N/A' ? 'N/A' : escapeHtml(rating)}</td>
+                <td>${email}</td>
+                <td>${phone}</td>
                 <td><span class="status status--info">${escapeHtml(category)}</span></td>
             </tr>
         `;
@@ -3199,16 +3993,15 @@ function displayScrapedLeads(leads) {
 }
 
 function exportLeadsToCSV(leads) {
-    const headers = ['Business Name', 'Address', 'Phone', 'Website', 'Rating', 'Category'];
+    const headers = ['Name', 'Website', 'Email', 'Phone', 'Category'];
     const csvContent = [
         headers.join(','),
         ...leads.map(lead => [
-            `"${lead.businessName}"`,
-            `"${lead.address}"`,
-            `"${lead.phone}"`,
-            `"${lead.website}"`,
-            lead.rating,
-            `"${lead.category}"`
+            `"${String(lead.businessName || '').replace(/"/g, '""')}"`,
+            `"${String(lead.website || '').replace(/"/g, '""')}"`,
+            `"${String(lead.email || '').replace(/"/g, '""')}"`,
+            `"${String(lead.phone || '').replace(/"/g, '""')}"`,
+            `"${String(lead.category || '').replace(/"/g, '""')}"`
         ].join(','))
     ].join('\n');
     
@@ -3353,9 +4146,15 @@ function displayColumnMapping(columns) {
     mappingSelects.forEach((select) => {
         const sourceColumn = String(select.getAttribute('data-source-column') || '');
         if (!sourceColumn) return;
+        if (!select.id) {
+            select.id = `enrichmentMapping_${sourceColumn.replace(/[^a-z0-9_-]/gi, '_')}`;
+        }
         enrichmentPreviewState.mapping[sourceColumn] = String(select.value || 'none');
         select.addEventListener('change', function () {
             enrichmentPreviewState.mapping[sourceColumn] = String(this.value || 'none');
+        });
+        enhanceSelectToAutosuggest(select.id, {
+            ariaLabel: `${sourceColumn} mapping suggestions`
         });
     });
 }
@@ -3654,6 +4453,7 @@ function resetCampaignStrategyVersionDropdown() {
         versionSelect.innerHTML = '<option value="">Select version</option>';
         versionSelect.value = '';
         versionSelect.disabled = true;
+        syncEnhancedSelectUI(versionSelect);
     }
     if (warningEl) {
         warningEl.classList.add('hidden');
@@ -3677,12 +4477,14 @@ function populateCampaignStrategyVersionDropdown(versions) {
         versionSelect.appendChild(option);
     });
     versionSelect.disabled = safeVersions.length === 0;
+    syncEnhancedSelectUI(versionSelect);
 }
 
 async function loadCampaignStrategyOptions() {
     const strategySelect = document.getElementById('campaignStrategy');
     if (!strategySelect) return;
 
+    setAutosuggestLoading('campaignStrategy', true);
     try {
         const response = await apiRequest('/api/strategy/history');
         const strategies = Array.isArray(response?.strategies) ? response.strategies : [];
@@ -3700,11 +4502,14 @@ async function loadCampaignStrategyOptions() {
             option.textContent = item.label;
             strategySelect.appendChild(option);
         });
+        syncEnhancedSelectUI(strategySelect);
     } catch (error) {
         console.error('Campaign strategy options loading error:', error);
         campaignStrategyOptions = [];
         strategySelect.innerHTML = '<option value="">None</option>';
+        syncEnhancedSelectUI(strategySelect);
     } finally {
+        setAutosuggestLoading('campaignStrategy', false);
         resetCampaignStrategyVersionDropdown();
     }
 }
@@ -3714,10 +4519,15 @@ async function handleCampaignStrategyChange(event) {
     const versionSelect = document.getElementById('campaignStrategyVersion');
 
     resetCampaignStrategyVersionDropdown();
-    if (!strategyId) return;
+    setAutosuggestLoading('campaignStrategyVersion', true);
+    if (!strategyId) {
+        setAutosuggestLoading('campaignStrategyVersion', false);
+        return;
+    }
 
     if (versionSelect) {
         versionSelect.disabled = true;
+        syncEnhancedSelectUI(versionSelect);
     }
 
     const requestToken = ++strategyVersionRequestToken;
@@ -3730,6 +4540,8 @@ async function handleCampaignStrategyChange(event) {
         if (requestToken !== strategyVersionRequestToken) return;
         console.error('Campaign strategy versions loading error:', error);
         resetCampaignStrategyVersionDropdown();
+    } finally {
+        setAutosuggestLoading('campaignStrategyVersion', false);
     }
 }
 
@@ -4200,6 +5012,7 @@ function setSelectValueAllowCustom(selectEl, value, fallbackLabel = 'Custom') {
     const normalized = String(value || '').trim();
     if (!normalized) {
         selectEl.value = '';
+        syncEnhancedSelectUI(selectEl);
         return;
     }
     const existing = Array.from(selectEl.options).find((opt) => String(opt.value) === normalized);
@@ -4210,6 +5023,7 @@ function setSelectValueAllowCustom(selectEl, value, fallbackLabel = 'Custom') {
         selectEl.appendChild(option);
     }
     selectEl.value = normalized;
+    syncEnhancedSelectUI(selectEl);
 }
 
 async function startCampaignEditFlow(campaignId) {

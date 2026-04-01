@@ -81,6 +81,7 @@ class LeadSource(str, enum.Enum):
     GOOGLE_MAPS = "google_maps"
     LINKEDIN = "linkedin"
     VOLZA = "volza"
+    BROWSER_EXTENSION = "browser_extension"
 
 
 class ContinentMaster(Base):
@@ -481,15 +482,20 @@ class ApiUsageAuditLog(Base):
 
     id = Column(String, primary_key=True, index=True)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
+    task_id = Column(String, ForeignKey("lead_scrape_tasks.id"), nullable=True, index=True)
     user_id = Column(String, nullable=False, index=True)
     provider_name = Column(String, nullable=False, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     duration = Column(Float, nullable=False, default=0.0)
+    success = Column(Boolean, nullable=True)
+    error_message = Column(Text, nullable=True)
+    lead_count = Column(Integer, nullable=False, default=0)
 
     organization = relationship("Organization", back_populates="api_usage_logs")
 
     __table_args__ = (
         CheckConstraint("duration >= 0", name="ck_api_usage_duration_non_negative"),
+        CheckConstraint("lead_count >= 0", name="ck_api_usage_lead_count_non_negative"),
         Index("ix_api_usage_org_time", "organization_id", "timestamp"),
         Index("ix_api_usage_org_provider", "organization_id", "provider_name"),
     )

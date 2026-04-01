@@ -3,7 +3,7 @@
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import time
@@ -61,11 +61,34 @@ app.add_middleware(
 
 
 class LeadScrapingRequest(BaseModel):
-    location: Union[str, Dict[str, Any]] = Field(..., description="Geographic location for lead search")
-    business_type: str = Field(..., description="Type of businesses to search for")
+    location: Optional[Union[str, Dict[str, Any]]] = Field(None, description="Geographic location for lead search")
+    business_type: Optional[str] = Field(None, description="Type of businesses to search for")
     radius: Optional[int] = Field(10, description="Search radius in kilometers")
     max_results: Optional[int] = Field(100, description="Maximum number of results")
     sources: Optional[List[str]] = Field(None, description="Lead sources to query")
+    website_url: Optional[str] = Field(None, description="Website URL for browser-extension based scraping")
+    extension_payload: Optional[Dict[str, Any]] = Field(None, description="Structured payload from browser extension")
+
+    @model_validator(mode="after")
+    def validate_search_input(self) -> "LeadScrapingRequest":
+        # Allow either the legacy search fields or browser-extension context.
+        location_text = _extract_location_text(self.location)
+        business_type = str(self.business_type or "").strip()
+        website_url = str(self.website_url or "").strip()
+        extension_payload = self.extension_payload
+
+        has_existing_search_fields = bool(location_text and business_type)
+        has_browser_context = bool(website_url or extension_payload)
+
+        if not has_existing_search_fields and not has_browser_context:
+            raise ValueError(
+                "Provide either location and business_type, or website_url/extension_payload."
+            )
+
+        if extension_payload is not None and not isinstance(extension_payload, dict):
+            raise ValueError("extension_payload must be an object.")
+
+        return self
 
 
 class StrategyLeadRequest(BaseModel):
@@ -73,7 +96,7 @@ class StrategyLeadRequest(BaseModel):
 
 # ===== LEAD SCRAPING =====
 
-SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza"]
+SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza", "browser_extension"]
 
 
 def _to_task_status(value: str) -> TaskStatus:
@@ -111,6 +134,7 @@ def _to_lead_source(source: str) -> LeadSource:
         "google_maps": LeadSource.GOOGLE_MAPS,
         "linkedin": LeadSource.LINKEDIN,
         "volza": LeadSource.VOLZA,
+        "browser_extension": LeadSource.BROWSER_EXTENSION,
     }
     return source_map[str(source or "").lower()]
 
@@ -234,6 +258,8 @@ def _lead_scrape_task_to_legacy_payload(
             "radius": task.radius,
             "max_results": task.max_results,
             "sources": task.requested_sources if isinstance(task.requested_sources, list) else [],
+            "website_url": task.location if "browser_extension" in (task.requested_sources or []) else None,
+            "has_extension_payload": "browser_extension" in (task.requested_sources or []),
         },
         "results": results_payload,
         "summary": summary_payload,
@@ -265,6 +291,92 @@ def _extract_location_text(location_value: Union[str, Dict[str, Any]]) -> str:
         text = str(location_value.get("text") or "").strip()
         return text
     return str(location_value or "").strip()
+
+
+def _has_browser_extension_context(request: LeadScrapingRequest) -> bool:
+    return bool(str(request.website_url or "").strip() or request.extension_payload)
+
+
+def _resolve_sources_for_request(request: LeadScrapingRequest) -> List[str]:
+    if _has_browser_extension_context(request):
+        return ["browser_extension"]
+    return _normalize_sources(request.sources)
+
+
+def _build_normalized_scrape_request(request: LeadScrapingRequest) -> LeadScrapingRequest:
+    location_text = _extract_location_text(request.location)
+    business_type = str(request.business_type or "").strip() or "Website Leads"
+    extension_payload = request.extension_payload if isinstance(request.extension_payload, dict) else None
+    website_url = (
+        str(request.website_url or "").strip()
+        or str((extension_payload or {}).get("website_url") or (extension_payload or {}).get("page_url") or "").strip()
+        or None
+    )
+
+    return LeadScrapingRequest(
+        location=location_text or None,
+        business_type=business_type,
+        radius=request.radius,
+        max_results=request.max_results,
+        sources=request.sources,
+        website_url=website_url,
+        extension_payload=extension_payload,
+    )
+
+
+def _task_location_value(request: LeadScrapingRequest) -> str:
+    if _has_browser_extension_context(request):
+        extension_payload = request.extension_payload if isinstance(request.extension_payload, dict) else {}
+        return str(
+            request.website_url
+            or extension_payload.get("website_url")
+            or extension_payload.get("page_url")
+            or _extract_location_text(request.location)
+            or "browser_extension"
+        ).strip()
+    return _extract_location_text(request.location)
+
+
+def _task_business_type_value(request: LeadScrapingRequest) -> str:
+    return str(request.business_type or "").strip() or "Website Leads"
+
+
+def _create_scrape_task_record(
+    db: Session,
+    request: LeadScrapingRequest,
+    organization_id: str,
+) -> str:
+    selected_sources = _resolve_sources_for_request(request)
+    if not selected_sources:
+        raise HTTPException(status_code=422, detail="At least one valid source is required")
+
+    task_id = str(uuid.uuid4())
+    _record_usage(db, organization_id, FeatureName.LEAD_ENRICHMENT)
+
+    try:
+        db_task = LeadScrapeTask(
+            id=task_id,
+            organization_id=organization_id,
+            location=_task_location_value(request),
+            business_type=_task_business_type_value(request),
+            radius=request.radius,
+            max_results=request.max_results,
+            requested_sources=selected_sources,
+            status=TaskStatus.RUNNING,
+            total_found=0,
+            source_results=None,
+            summary=None,
+            created_at=datetime.utcnow(),
+            started_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(db_task)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to persist scrape task: {str(exc)}")
+
+    return task_id
 
 
 def _apply_column_mapping_to_rows(
@@ -401,32 +513,7 @@ async def start_lead_scraping_from_strategy(
         max_results=100,
         sources=selected_sources,
     )
-
-    task_id = str(uuid.uuid4())
-    _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
-
-    try:
-        db_task = LeadScrapeTask(
-            id=task_id,
-            organization_id=current_user["organization_id"],
-            location=request_model.location,
-            business_type=request_model.business_type,
-            radius=request_model.radius,
-            max_results=request_model.max_results,
-            requested_sources=selected_sources,
-            status=TaskStatus.RUNNING,
-            total_found=0,
-            source_results=None,
-            summary=None,
-            created_at=datetime.utcnow(),
-            started_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        db.add(db_task)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to persist strategy lead task: {str(exc)}")
+    task_id = _create_scrape_task_record(db, request_model, current_user["organization_id"])
 
     background_tasks.add_task(
         _scrape_leads_task,
@@ -452,51 +539,9 @@ async def start_lead_scraping(
 ):
     """Start lead scraping task"""
     try:
-        location_text = _extract_location_text(request.location)
-        if not location_text:
-            raise HTTPException(status_code=422, detail="location is required")
+        normalized_request = _build_normalized_scrape_request(request)
+        task_id = _create_scrape_task_record(db, normalized_request, current_user["organization_id"])
 
-        normalized_request = LeadScrapingRequest(
-            location=location_text,
-            business_type=request.business_type,
-            radius=request.radius,
-            max_results=request.max_results,
-            sources=request.sources,
-        )
-
-        selected_sources = _normalize_sources(normalized_request.sources)
-        if not selected_sources:
-            raise HTTPException(status_code=422, detail="At least one valid source is required")
-
-        task_id = str(uuid.uuid4())
-
-        # Record usage
-        _record_usage(db, current_user["organization_id"], FeatureName.LEAD_ENRICHMENT)
-
-        try:
-            db_task = LeadScrapeTask(
-                id=task_id,
-                organization_id=current_user["organization_id"],
-                location=str(normalized_request.location),
-                business_type=normalized_request.business_type,
-                radius=normalized_request.radius,
-                max_results=normalized_request.max_results,
-                requested_sources=selected_sources,
-                status=TaskStatus.RUNNING,
-                total_found=0,
-                source_results=None,
-                summary=None,
-                created_at=datetime.utcnow(),
-                started_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-            )
-            db.add(db_task)
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to persist scrape task: {str(e)}")
-
-        # Start background task
         background_tasks.add_task(
             _scrape_leads_task,
             task_id,
@@ -517,6 +562,37 @@ async def start_lead_scraping(
         raise HTTPException(status_code=500, detail=f"Failed to start lead scraping: {str(e)}")
 
 
+@app.post("/api/leads/from-extension", tags=["Lead Generation"])
+async def start_lead_scraping_from_extension(
+    request: LeadScrapingRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Dict[str, Any] = Depends(require_feature(FeatureName.LEAD_ENRICHMENT)),
+    db: Session = Depends(get_db),
+):
+    normalized_request = _build_normalized_scrape_request(request)
+    if not _has_browser_extension_context(normalized_request):
+        raise HTTPException(
+            status_code=422,
+            detail="website_url or extension_payload is required for extension scraping",
+        )
+
+    task_id = _create_scrape_task_record(db, normalized_request, current_user["organization_id"])
+    background_tasks.add_task(
+        _scrape_leads_task,
+        task_id,
+        normalized_request,
+        current_user["organization_id"],
+        current_user["user_id"],
+    )
+
+    return {
+        "success": True,
+        "message": "Lead scraping task started from extension payload",
+        "task_id": task_id,
+        "estimated_completion": "1-2 minutes",
+    }
+
+
 async def _scrape_leads_task(
     task_id: str,
     request: LeadScrapingRequest,
@@ -526,7 +602,7 @@ async def _scrape_leads_task(
     """Background task for multi-source lead scraping"""
     db = SessionLocal()
     try:
-        sources = _normalize_sources(request.sources)
+        sources = _resolve_sources_for_request(request)
         results: Dict[str, Dict[str, Any]] = {}
         all_leads: List[Dict[str, Any]] = []
 
@@ -568,6 +644,7 @@ async def _scrape_leads_task(
                 "organization_id": org_id,
                 "source": source,
                 "db_session": db,
+                "request": request,
             }
 
             provider = get_provider(source)
@@ -592,10 +669,14 @@ async def _scrape_leads_task(
                     ApiUsageAuditLog(
                         id=str(uuid.uuid4()),
                         organization_id=org_id,
+                        task_id=task_id,
                         user_id=str(user_id or ""),
                         provider_name=source,
                         timestamp=provider_started_at,
                         duration=provider_duration,
+                        success=status == "success",
+                        error_message=None if status == "success" else (message or f"{source_label} scraping failed."),
+                        lead_count=len(leads) if isinstance(leads, list) else 0,
                     )
                 )
                 db.commit()
