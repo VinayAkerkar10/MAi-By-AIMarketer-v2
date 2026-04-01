@@ -4080,7 +4080,15 @@ function displayColumnMapping(columns) {
     const mappingDiv = document.getElementById('columnMapping');
     if (!mappingDiv) return;
 
-    const targets = ['company_name', 'email', 'phone', 'industry', 'website', 'none'];
+    const targets = ['business_name', 'email', 'phone', 'industry', 'website', 'none'];
+    const targetLabels = {
+        business_name: 'Company Name',
+        email: 'Email',
+        phone: 'Phone',
+        industry: 'Industry',
+        website: 'Website',
+        none: 'None',
+    };
     const suggestTarget = (columnName) => {
         const key = String(columnName || '').trim().toLowerCase();
         if (!key) return 'none';
@@ -4088,7 +4096,7 @@ function displayColumnMapping(columns) {
         if (key.includes('phone') || key.includes('mobile') || key.includes('tel')) return 'phone';
         if (key.includes('industry') || key.includes('category') || key.includes('sector')) return 'industry';
         if (key.includes('website') || key.includes('url') || key.includes('site')) return 'website';
-        if (key.includes('company') || key.includes('business') || key === 'name' || key.includes('organization')) return 'company_name';
+        if (key.includes('company') || key.includes('business') || key === 'name' || key.includes('organization')) return 'business_name';
         return 'none';
     };
 
@@ -4129,7 +4137,7 @@ function displayColumnMapping(columns) {
                                 <td style="min-width: 180px;">
                                     <select class="form-control enrichment-column-mapping" data-source-column="${escapeHtml(col)}">
                                         ${targets.map((target) => `
-                                            <option value="${target}" ${suggestTarget(col) === target ? 'selected' : ''}>${target}</option>
+                                            <option value="${target}" ${suggestTarget(col) === target ? 'selected' : ''}>${targetLabels[target] || target}</option>
                                         `).join('')}
                                     </select>
                                 </td>

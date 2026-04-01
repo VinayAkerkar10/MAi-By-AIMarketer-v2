@@ -38,6 +38,7 @@ from shared.database import (
     UserRole,
 )
 from shared.auth import get_current_user, require_feature
+from services.lead_enrichment_service.enrichment_service import enrich_customer
 from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
 from services.lead_enrichment_service.providers.provider_registry import get_provider
 
@@ -1037,18 +1038,13 @@ async def _enrich_customer_data_task(task_id: str, customer_data: List[Dict], or
         enriched_data = []
         
         for idx, customer in enumerate(customer_data):
-            enriched_customer = customer.copy()
-            
-            # TODO: Integrate with Clearbit, Hunter.io, FullContact APIs
-            if 'business_name' in customer:
-                company_name = customer['business_name']
-                enriched_customer.update({
-                    'email': f"info@{company_name.lower().replace(' ', '')}.com",
-                    'phone': f"+1-555-{hash(company_name) % 9000 + 1000}",
-                    'website': f"https://{company_name.lower().replace(' ', '')}.com",
-                    'linkedin': f"https://linkedin.com/company/{company_name.lower().replace(' ', '-')}",
-                    'enriched_at': datetime.utcnow().isoformat()
-                })
+            org_context = {
+                "org_id": org_id,
+                "organization_id": org_id,
+                "db": db,
+                "db_session": db,
+            }
+            enriched_customer = await enrich_customer(customer, org_context)
             
             enriched_data.append(enriched_customer)
 
