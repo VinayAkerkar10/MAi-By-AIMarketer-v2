@@ -21,9 +21,11 @@
         "<all_urls>"
       ],
       "js": [
+        "shared_scraper_engine.js",
         "content.js"
       ],
       "run_at": "document_idle"
     }
   ]
 }
+

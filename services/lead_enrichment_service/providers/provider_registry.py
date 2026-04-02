@@ -2,6 +2,7 @@ from typing import Optional
 
 from .lead_source_provider import LeadSourceProvider
 from .browser_extension_provider import BrowserExtensionProvider
+from .direct_url_provider import DirectUrlProvider
 from .email_provider import EmailProvider
 from .github_provider import GitHubProvider
 from .google_maps_provider import GoogleMapsProvider
@@ -17,6 +18,7 @@ def get_provider(source_name: str) -> Optional[LeadSourceProvider]:
         "email": EmailProvider,
         "volza": VolzaProvider,
         "browser_extension": BrowserExtensionProvider,
+        "direct_url": DirectUrlProvider,
     }
 
     provider_class = providers.get(str(source_name or "").strip().lower())

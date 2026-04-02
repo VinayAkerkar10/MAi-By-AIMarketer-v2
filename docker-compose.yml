@@ -146,7 +146,7 @@ services:
   lead_enrichment_service:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/lead_enrichment_service/Dockerfile
     command: uvicorn services.lead_enrichment_service.main:app --host 0.0.0.0 --port 8004 --reload
     ports:
       - "8004:8004"

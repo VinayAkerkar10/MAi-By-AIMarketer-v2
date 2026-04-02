@@ -97,7 +97,7 @@ class StrategyLeadRequest(BaseModel):
 
 # ===== LEAD SCRAPING =====
 
-SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza", "browser_extension"]
+SUPPORTED_SOURCES = ["github", "google_maps", "linkedin", "volza", "browser_extension", "direct_url"]
 
 
 def _to_task_status(value: str) -> TaskStatus:
@@ -136,6 +136,7 @@ def _to_lead_source(source: str) -> LeadSource:
         "linkedin": LeadSource.LINKEDIN,
         "volza": LeadSource.VOLZA,
         "browser_extension": LeadSource.BROWSER_EXTENSION,
+        "direct_url": LeadSource.BROWSER_EXTENSION,
     }
     return source_map[str(source or "").lower()]
 
@@ -259,7 +260,10 @@ def _lead_scrape_task_to_legacy_payload(
             "radius": task.radius,
             "max_results": task.max_results,
             "sources": task.requested_sources if isinstance(task.requested_sources, list) else [],
-            "website_url": task.location if "browser_extension" in (task.requested_sources or []) else None,
+            "website_url": task.location if any(
+                source in (task.requested_sources or [])
+                for source in ["browser_extension", "direct_url"]
+            ) else None,
             "has_extension_payload": "browser_extension" in (task.requested_sources or []),
         },
         "results": results_payload,
@@ -295,12 +299,18 @@ def _extract_location_text(location_value: Union[str, Dict[str, Any]]) -> str:
 
 
 def _has_browser_extension_context(request: LeadScrapingRequest) -> bool:
-    return bool(str(request.website_url or "").strip() or request.extension_payload)
+    return isinstance(request.extension_payload, dict) and bool(request.extension_payload)
+
+
+def _has_direct_url_context(request: LeadScrapingRequest) -> bool:
+    return bool(str(request.website_url or "").strip())
 
 
 def _resolve_sources_for_request(request: LeadScrapingRequest) -> List[str]:
     if _has_browser_extension_context(request):
         return ["browser_extension"]
+    if _has_direct_url_context(request):
+        return ["direct_url"]
     return _normalize_sources(request.sources)
 
 
@@ -329,12 +339,13 @@ def _task_location_value(request: LeadScrapingRequest) -> str:
     if _has_browser_extension_context(request):
         extension_payload = request.extension_payload if isinstance(request.extension_payload, dict) else {}
         return str(
-            request.website_url
-            or extension_payload.get("website_url")
+            extension_payload.get("website_url")
             or extension_payload.get("page_url")
             or _extract_location_text(request.location)
             or "browser_extension"
         ).strip()
+    if _has_direct_url_context(request):
+        return str(request.website_url or "").strip()
     return _extract_location_text(request.location)
 
 
@@ -571,10 +582,10 @@ async def start_lead_scraping_from_extension(
     db: Session = Depends(get_db),
 ):
     normalized_request = _build_normalized_scrape_request(request)
-    if not _has_browser_extension_context(normalized_request):
+    if not _has_browser_extension_context(normalized_request) and not _has_direct_url_context(normalized_request):
         raise HTTPException(
             status_code=422,
-            detail="website_url or extension_payload is required for extension scraping",
+            detail="website_url or extension_payload is required for website scraping",
         )
 
     task_id = _create_scrape_task_record(db, normalized_request, current_user["organization_id"])

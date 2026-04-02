@@ -59,7 +59,7 @@ async function scrapeCurrentPage() {
 
     await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['content.js']
+        files: ['shared_scraper_engine.js', 'content.js']
     });
     console.log('[Extension] Forced content script injection');
 
@@ -227,3 +227,4 @@ document.addEventListener('DOMContentLoaded', async () => {
         setStatus('Stored payload found. Auto-send is enabled, but you can still resend manually.');
     }
 });
+

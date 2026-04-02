@@ -3878,9 +3878,13 @@ async function startLeadScraping(params) {
 
 function displayScrapedLeads(leads) {
     const tbody = document.getElementById('leadsTableBody');
+    const resultsMeta = document.getElementById('leadsResultsMeta');
     if (!tbody) return;
 
     const safeLeads = Array.isArray(leads) ? leads : [];
+    const displayedLeads = safeLeads.slice(0, 10);
+    const total = safeLeads.length;
+    const shown = displayedLeads.length;
 
     const escapeHtml = (value) => String(value)
         .replace(/&/g, '&amp;')
@@ -3940,7 +3944,15 @@ function displayScrapedLeads(leads) {
         `;
     };
 
-    tbody.innerHTML = safeLeads.map((leadRaw, index) => {
+    if (resultsMeta) {
+        if (total > 0) {
+            resultsMeta.textContent = `Showing ${shown} of ${total} results. Download full data using "Export CSV".`;
+        } else {
+            resultsMeta.textContent = 'Showing 0 of 0 results.';
+        }
+    }
+
+    tbody.innerHTML = displayedLeads.map((leadRaw, index) => {
         const lead = (leadRaw && typeof leadRaw === 'object') ? leadRaw : {};
 
         const businessName = getFirstAvailable(lead, ['business_name', 'businessName', 'name', 'login']);

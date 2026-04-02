@@ -23,7 +23,8 @@ class BrowserExtensionProvider(LeadSourceProvider):
         request = org_context.get("request")
         if request is None:
             return False
-        return bool(getattr(request, "website_url", None) or getattr(request, "extension_payload", None))
+        payload = getattr(request, "extension_payload", None)
+        return isinstance(payload, dict) and bool(payload)
 
     async def scrape(
         self,
