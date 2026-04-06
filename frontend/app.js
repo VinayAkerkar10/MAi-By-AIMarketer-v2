@@ -3897,51 +3897,30 @@ function displayScrapedLeads(leads) {
         .replace(/_/g, ' ')
         .replace(/\b\w/g, c => c.toUpperCase());
 
-    const formatValue = (value) => {
-        if (value === null || value === undefined || value === '') return 'N/A';
-        if (Array.isArray(value)) {
-            if (value.length === 0) return 'N/A';
-            return value.map(item => formatValue(item)).join('<br>');
-        }
-        if (typeof value === 'object') {
-            const entries = Object.entries(value);
-            if (entries.length === 0) return 'N/A';
-            return entries
-                .map(([k, v]) => `<div><strong>${escapeHtml(titleize(k))}:</strong> ${formatValue(v)}</div>`)
-                .join('');
-        }
-        return escapeHtml(value);
+    const NOT_AVAILABLE = 'Not Available';
+
+    const getNormalizedValue = (lead, key) => {
+        const value = lead?.[key];
+        if (value === null || value === undefined || value === '') return NOT_AVAILABLE;
+        return String(value);
     };
 
-    const getFirstAvailable = (lead, keys, fallback = 'N/A') => {
-        for (const key of keys) {
-            const val = lead?.[key];
-            if (val !== undefined && val !== null && val !== '') return val;
+    const renderCellValue = (value) => {
+        const normalized = String(value || NOT_AVAILABLE);
+        if (normalized === NOT_AVAILABLE) {
+            return `<span class="table-cell--muted">${escapeHtml(NOT_AVAILABLE)}</span>`;
         }
-        return fallback;
+        return escapeHtml(normalized);
     };
 
-    const renderWebsite = (value) => {
-        if (value === null || value === undefined || value === '') return 'N/A';
-        const website = Array.isArray(value) ? value[0] : value;
-        if (!website || typeof website !== 'string') return escapeHtml(formatValue(value));
-        const href = website.startsWith('http') ? website : `http://${website}`;
-        return `<a href="${escapeHtml(href)}" target="_blank">${escapeHtml(website)}</a>`;
-    };
+    const renderLinkCell = (value) => {
+        const normalized = String(value || NOT_AVAILABLE);
+        if (normalized === NOT_AVAILABLE) {
+            return `<span class="table-cell--muted">${escapeHtml(NOT_AVAILABLE)}</span>`;
+        }
 
-    const renderLeadDetails = (lead) => {
-        const metadata = (lead && typeof lead.metadata === 'object' && lead.metadata) ? lead.metadata : {};
-        const topRepos = Array.isArray(metadata.top_repos) ? metadata.top_repos : [];
-        const bio = metadata.bio || 'N/A';
-        const followers = metadata.followers ?? 'N/A';
-        const publicRepos = metadata.public_repos ?? 'N/A';
-
-        return `
-            <div><strong>Followers:</strong> ${escapeHtml(followers)}</div>
-            <div><strong>Public Repos:</strong> ${escapeHtml(publicRepos)}</div>
-            <div><strong>Top Repos:</strong> ${topRepos.length ? topRepos.map(repo => escapeHtml(repo)).join(', ') : 'N/A'}</div>
-            <div><strong>Bio:</strong> ${escapeHtml(bio)}</div>
-        `;
+        const href = normalized.startsWith('http') ? normalized : `https://${normalized}`;
+        return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(normalized)}</a>`;
     };
 
     if (resultsMeta) {
@@ -3952,49 +3931,47 @@ function displayScrapedLeads(leads) {
         }
     }
 
-    tbody.innerHTML = displayedLeads.map((leadRaw, index) => {
+    if (total === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="11" class="table-cell--muted">No leads found</td>
+            </tr>
+        `;
+    } else {
+        tbody.innerHTML = displayedLeads.map((leadRaw) => {
         const lead = (leadRaw && typeof leadRaw === 'object') ? leadRaw : {};
 
-        const businessName = getFirstAvailable(lead, ['business_name', 'businessName', 'name', 'login']);
-        const email = formatValue(getFirstAvailable(lead, ['email'], 'N/A'));
-        const phone = formatValue(getFirstAvailable(lead, ['phone', 'phones', 'contact_numbers']));
-        const websiteValue = getFirstAvailable(lead, ['website', 'websites', 'url', 'html_url']);
-        const category = getFirstAvailable(lead, ['category', 'business_type', 'type'], 'N/A');
-        const source = String(getFirstAvailable(lead, ['source'], 'unknown')).toLowerCase();
+        const name = getNormalizedValue(lead, 'name');
+        const company = getNormalizedValue(lead, 'company');
+        const email = getNormalizedValue(lead, 'email');
+        const phone = getNormalizedValue(lead, 'phone');
+        const website = getNormalizedValue(lead, 'website');
+        const linkedin = getNormalizedValue(lead, 'linkedin');
+        const github = getNormalizedValue(lead, 'github');
+        const location = getNormalizedValue(lead, 'location');
+        const designation = getNormalizedValue(lead, 'designation');
+        const industry = getNormalizedValue(lead, 'industry');
+        const source = getNormalizedValue(lead, 'source').toLowerCase();
         const sourceLabel = titleize(source);
         const sourceClass = source.replace(/[^a-z0-9_-]/g, '');
-        const detailsId = `leadDetails_${index}`;
 
         return `
             <tr>
-                <td>
-                    <strong>${escapeHtml(businessName)}</strong>
-                    <span class="source-badge source-badge--${escapeHtml(sourceClass)}">${escapeHtml(sourceLabel)}</span>
-                    <div style="margin-top:6px;">
-                        <button type="button" class="btn btn--outline btn--sm lead-details-toggle" data-target="${detailsId}">View Details</button>
-                    </div>
-                    <div id="${detailsId}" class="lead-details hidden" style="margin-top:6px; font-size:12px;">
-                        ${renderLeadDetails(lead)}
-                    </div>
-                </td>
-                <td>${renderWebsite(websiteValue)}</td>
-                <td>${email}</td>
-                <td>${phone}</td>
-                <td><span class="status status--info">${escapeHtml(category)}</span></td>
+                <td>${renderCellValue(name)}</td>
+                <td>${renderCellValue(company)}</td>
+                <td>${renderCellValue(email)}</td>
+                <td>${renderCellValue(phone)}</td>
+                <td>${renderLinkCell(website)}</td>
+                <td>${renderLinkCell(linkedin)}</td>
+                <td>${renderLinkCell(github)}</td>
+                <td>${renderCellValue(location)}</td>
+                <td>${renderCellValue(designation)}</td>
+                <td>${renderCellValue(industry)}</td>
+                <td><span class="source-badge source-badge--${escapeHtml(sourceClass)}">${escapeHtml(sourceLabel)}</span></td>
             </tr>
         `;
-    }).join('');
-
-    tbody.querySelectorAll('.lead-details-toggle').forEach(button => {
-        button.addEventListener('click', function() {
-            const targetId = this.getAttribute('data-target');
-            const detailsEl = targetId ? document.getElementById(targetId) : null;
-            if (!detailsEl) return;
-
-            detailsEl.classList.toggle('hidden');
-            this.textContent = detailsEl.classList.contains('hidden') ? 'View Details' : 'Hide Details';
-        });
-    });
+        }).join('');
+    }
 
     const exportBtn = document.getElementById('exportLeads');
     if (exportBtn) {
@@ -4005,15 +3982,18 @@ function displayScrapedLeads(leads) {
 }
 
 function exportLeadsToCSV(leads) {
-    const headers = ['Name', 'Website', 'Email', 'Phone', 'Category'];
+    const headers = ['Name', 'Company', 'Email', 'Phone', 'Location', 'Website', 'Source', 'Industry'];
     const csvContent = [
         headers.join(','),
         ...leads.map(lead => [
-            `"${String(lead.businessName || '').replace(/"/g, '""')}"`,
-            `"${String(lead.website || '').replace(/"/g, '""')}"`,
+            `"${String(lead.name || '').replace(/"/g, '""')}"`,
+            `"${String(lead.company || '').replace(/"/g, '""')}"`,
             `"${String(lead.email || '').replace(/"/g, '""')}"`,
             `"${String(lead.phone || '').replace(/"/g, '""')}"`,
-            `"${String(lead.category || '').replace(/"/g, '""')}"`
+            `"${String(lead.location || '').replace(/"/g, '""')}"`,
+            `"${String(lead.website || '').replace(/"/g, '""')}"`,
+            `"${String(lead.source || '').replace(/"/g, '""')}"`,
+            `"${String(lead.industry || '').replace(/"/g, '""')}"`
         ].join(','))
     ].join('\n');
     

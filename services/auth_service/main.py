@@ -843,30 +843,51 @@ async def list_org_api_keys(
     current_admin: Dict[str, Any] = Depends(get_current_org_admin),
     db: Session = Depends(get_db),
 ):
-    org_id = current_admin["organization_id"]
-    rows = (
-        db.query(OrganizationApiKey)
-        .filter(OrganizationApiKey.organization_id == org_id)
-        .order_by(OrganizationApiKey.provider_name.asc())
-        .all()
-    )
-
-    return {
-        "success": True,
-        "api_keys": [
-            {
-                "id": row.id,
-                "organization_id": row.organization_id,
-                "provider_name": row.provider_name,
-                "api_key_masked": mask_api_key(decrypt_api_key(row.api_key)),
-                "created_by": row.created_by,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-                "status": row.status,
+    try:
+        org_id = str(current_admin.get("organization_id") or "").strip()
+        if not org_id:
+            return {
+                "success": True,
+                "api_keys": [],
             }
-            for row in rows
-        ],
-    }
+
+        rows = (
+            db.query(OrganizationApiKey)
+            .filter(OrganizationApiKey.organization_id == org_id)
+            .order_by(OrganizationApiKey.provider_name.asc())
+            .all()
+        )
+
+        api_keys = []
+        for row in rows:
+            try:
+                masked_key = mask_api_key(decrypt_api_key(row.api_key))
+            except Exception as exc:
+                print("API KEYS ERROR:", f"Failed to decrypt API key {row.id}: {str(exc)}")
+                masked_key = "****"
+
+            api_keys.append(
+                {
+                    "id": row.id,
+                    "organization_id": row.organization_id,
+                    "provider": row.provider_name,
+                    "provider_name": row.provider_name,
+                    "api_key": masked_key,
+                    "api_key_masked": masked_key,
+                    "status": row.status,
+                    "created_by": row.created_by,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                }
+            )
+
+        return {
+            "success": True,
+            "api_keys": api_keys,
+        }
+    except Exception as e:
+        print("API KEYS ERROR:", str(e))
+        raise
 
 
 @app.post("/api/admin/api-keys", tags=["Admin - API Keys"])

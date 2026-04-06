@@ -1930,6 +1930,10 @@ select.form-control {
   color: #fff;
 }
 
+.table-cell--muted {
+  color: var(--color-text-secondary);
+}
+
 .summary-box {
   margin-bottom: 12px;
 }

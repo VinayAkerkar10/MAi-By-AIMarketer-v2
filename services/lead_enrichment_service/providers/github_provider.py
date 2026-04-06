@@ -22,21 +22,24 @@ class GitHubProvider(LeadSourceProvider):
         request: Any,
         org_context: Dict[str, Any],
     ) -> Tuple[str, List[Dict[str, Any]], str]:
-        db = org_context.get("db_session")
-        organization_id = org_context.get("organization_id")
-        token, _ = get_org_api_key(db, organization_id, self.provider_name())
-        if not token:
-            return "error", [], "Provider not configured for this organization."
-
-        max_results = max(1, min(int(request.max_results or 30), 30))
-        query = f"location:{request.location} {request.business_type} in:bio"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-
+        print("DEBUG: ENTERED GitHub scrape")
         try:
+            db = org_context.get("db_session")
+            organization_id = org_context.get("organization_id")
+            token, _ = get_org_api_key(db, organization_id, self.provider_name())
+            print("DEBUG: GitHub token prefix:", token[:6] if token else "NONE")
+            if not token:
+                return "error", [], "Provider not configured for this organization."
+
+            max_results = max(1, min(int(request.max_results or 30), 30))
+            query = f"location:{request.location} {request.business_type} in:bio"
+            print("DEBUG: GitHub query:", query)
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+
             import httpx
 
             async with httpx.AsyncClient(timeout=15) as client:
@@ -50,6 +53,8 @@ class GitHubProvider(LeadSourceProvider):
                     },
                     headers=headers,
                 )
+                print("DEBUG: GitHub status:", search_response.status_code)
+                print("DEBUG: GitHub response:", search_response.text[:500])
 
                 if search_response.status_code == 403:
                     remaining = search_response.headers.get("X-RateLimit-Remaining", "")
@@ -122,4 +127,5 @@ class GitHubProvider(LeadSourceProvider):
 
                 return "success", leads, ""
         except Exception as e:
+            print("GITHUB SCRAPE ERROR:", str(e))
             return "error", [], f"GitHub scraping failed: {str(e)}"

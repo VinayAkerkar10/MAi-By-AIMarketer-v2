@@ -39,8 +39,9 @@ from shared.database import (
 )
 from shared.auth import get_current_user, require_feature
 from services.lead_enrichment_service.enrichment_service import enrich_customer
+from services.lead_enrichment_service.normalizer import normalize_lead
 from services.lead_enrichment_service.relevance_ranker import rank_posts_for_lead
-from services.lead_enrichment_service.providers.provider_registry import get_provider
+from services.lead_enrichment_service.providers.provider_registry import AVAILABLE_PROVIDERS, get_provider
 
 app = FastAPI(
     title="MAi Lead Enrichment Service",
@@ -181,22 +182,27 @@ def _enrichment_task_to_legacy_payload(task: EnrichmentTask, rows: List[Enrichme
 
 
 def _lead_row_to_payload(row: LeadScrapeResult) -> Dict[str, Any]:
-    if isinstance(row.raw_payload, dict):
-        return row.raw_payload
-
-    payload = {
-        "business_name": row.business_name,
-        "contact_name": row.contact_name,
-        "email": row.email,
-        "phone": row.phone,
-        "website": row.website,
-        "address": row.address,
-        "source": _source_enum_to_key(row.source),
-        "category": row.category,
-        "metadata": row.meta_data or {},
-        "scraped_at": row.created_at.isoformat() if row.created_at else datetime.utcnow().isoformat(),
+    raw_payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    source_metadata = row.meta_data if isinstance(row.meta_data, dict) else {}
+    merged_payload = {
+        **raw_payload,
+        "name": raw_payload.get("name") or row.contact_name,
+        "contact_name": raw_payload.get("contact_name") or row.contact_name,
+        "email": raw_payload.get("email") or row.email,
+        "phone": raw_payload.get("phone") or row.phone,
+        "company": raw_payload.get("company") or row.business_name,
+        "company_name": raw_payload.get("company_name") or row.business_name,
+        "business_name": raw_payload.get("business_name") or row.business_name,
+        "location": raw_payload.get("location") or row.address,
+        "address": raw_payload.get("address") or row.address,
+        "source": raw_payload.get("source") or _source_enum_to_key(row.source),
+        "website": raw_payload.get("website") or row.website,
+        "industry": raw_payload.get("industry") or row.category,
+        "category": raw_payload.get("category") or row.category,
+        "source_metadata": raw_payload.get("source_metadata") if isinstance(raw_payload.get("source_metadata"), dict) else source_metadata,
+        "metadata": raw_payload.get("metadata") if isinstance(raw_payload.get("metadata"), dict) else source_metadata,
     }
-    return payload
+    return normalize_lead(merged_payload.get("source"), merged_payload)
 
 
 def _build_results_from_runs(
@@ -468,6 +474,18 @@ def _build_location_from_profile(profile: Dict[str, Any]) -> str:
     return ", ".join(parts) if parts else "Global"
 
 
+def _normalize_scraped_leads_for_source(source: str, leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized_leads: List[Dict[str, Any]] = []
+    for lead in leads:
+        raw_lead = lead if isinstance(lead, dict) else {}
+        normalized = normalize_lead(source, raw_lead)
+        if normalized.get("scraped_at") == "Not Available":
+            normalized["scraped_at"] = raw_lead.get("scraped_at") or datetime.utcnow().isoformat()
+        normalized_leads.append(normalized)
+
+    return normalized_leads
+
+
 @app.post("/api/leads/from-strategy", tags=["Lead Generation"])
 async def start_lead_scraping_from_strategy(
     payload: StrategyLeadRequest,
@@ -615,10 +633,13 @@ async def _scrape_leads_task(
     db = SessionLocal()
     try:
         sources = _resolve_sources_for_request(request)
+        print("DEBUG: Selected sources:", sources)
+        print("DEBUG: Available providers:", list(AVAILABLE_PROVIDERS.keys()))
         results: Dict[str, Dict[str, Any]] = {}
         all_leads: List[Dict[str, Any]] = []
 
         for source in sources:
+            print("DEBUG: Processing source:", source)
             db_source_run = (
                 db.query(LeadSourceRun)
                 .filter(
@@ -669,11 +690,14 @@ async def _scrape_leads_task(
             else:
                 is_configured = provider.validate_config(org_context)
                 if not is_configured:
+                    print("DEBUG: Skipping provider:", source, "Reason: validate_config failed")
                     status = "error"
                     leads = []
                     message = "Provider not configured for this organization."
                 else:
                     status, leads, message = await provider.scrape(request, org_context)
+                    if not isinstance(leads, list):
+                        leads = []
             provider_duration = max(0.0, time.perf_counter() - provider_started_ts)
 
             try:
@@ -725,6 +749,7 @@ async def _scrape_leads_task(
                 pass
 
             if status == "success":
+                leads = _normalize_scraped_leads_for_source(source, leads)
                 results[source] = {
                     "status": "success",
                     "leads": leads,
@@ -742,14 +767,14 @@ async def _scrape_leads_task(
                             task_id=task_id,
                             organization_id=org_id,
                             source=_to_lead_source(source),
-                            business_name=lead.get("business_name"),
-                            contact_name=lead.get("contact_name"),
+                            business_name=lead.get("company"),
+                            contact_name=lead.get("name"),
                             email=lead.get("email"),
                             phone=lead.get("phone"),
                             website=lead.get("website"),
-                            address=lead.get("address"),
-                            category=lead.get("category"),
-                            meta_data=lead.get("metadata"),
+                            address=lead.get("location"),
+                            category=lead.get("industry"),
+                            meta_data=lead.get("source_metadata"),
                             raw_payload=lead,
                             created_at=datetime.utcnow(),
                         )

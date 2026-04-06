@@ -10,18 +10,19 @@ from .linkedin_provider import LinkedInProvider
 from .volza_provider import VolzaProvider
 
 
-def get_provider(source_name: str) -> Optional[LeadSourceProvider]:
-    providers = {
-        "github": GitHubProvider,
-        "google_maps": GoogleMapsProvider,
-        "linkedin": LinkedInProvider,
-        "email": EmailProvider,
-        "volza": VolzaProvider,
-        "browser_extension": BrowserExtensionProvider,
-        "direct_url": DirectUrlProvider,
-    }
+AVAILABLE_PROVIDERS = {
+    "github": GitHubProvider,
+    "google_maps": GoogleMapsProvider,
+    "linkedin": LinkedInProvider,
+    "email": EmailProvider,
+    "volza": VolzaProvider,
+    "browser_extension": BrowserExtensionProvider,
+    "direct_url": DirectUrlProvider,
+}
 
-    provider_class = providers.get(str(source_name or "").strip().lower())
+
+def get_provider(source_name: str) -> Optional[LeadSourceProvider]:
+    provider_class = AVAILABLE_PROVIDERS.get(str(source_name or "").strip().lower())
     if not provider_class:
         return None
     return provider_class()
