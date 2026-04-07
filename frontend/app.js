@@ -3717,12 +3717,22 @@ function renderSourceResultsSummary(results = {}, summary = null) {
 
     const sourceRows = entries.map(([source, sourceResult]) => {
         const isSuccess = sourceResult?.status === 'success';
+        const isUnavailable = sourceResult?.status === 'unavailable';
         const label = source.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
         if (isSuccess) {
             const leadCount = Array.isArray(sourceResult?.leads) ? sourceResult.leads.length : 0;
             const suffix = source === 'browser_extension' ? 'clean leads' : 'leads';
             return `<div class="status status--success" style="margin-bottom: 8px;">${label}: ${leadCount} ${suffix}</div>`;
+        }
+
+        if (isUnavailable) {
+            const message = sourceResult?.message || 'Not available';
+            const cleanMessage = message === 'Volza integration is not available. API access required.'
+                ? 'Not available (API access required)'
+                : message;
+            const tooltip = source === 'volza' ? ' title="Requires Volza API subscription"' : '';
+            return `<div class="status status--info" style="margin-bottom: 8px;"${tooltip}>${label}: ${cleanMessage}</div>`;
         }
 
         const message = sourceResult?.message || 'Source failed.';
@@ -3734,7 +3744,7 @@ function renderSourceResultsSummary(results = {}, summary = null) {
     }).join('');
 
     const summaryHtml = safeSummary
-        ? `<div class="summary-box"><span>Total: ${Number(safeSummary.total_sources_requested) || 0}</span><span class="success-count">Successful: ${Number(safeSummary.successful_sources) || 0}</span><span class="failed-count">Failed: ${Number(safeSummary.failed_sources) || 0}</span></div>`
+        ? `<div class="summary-box"><span>Total: ${Number(safeSummary.total_sources_requested) || 0}</span><span class="success-count">Successful: ${Number(safeSummary.successful_sources) || 0}</span><span class="failed-count">Failed: ${Number(safeSummary.failed_sources) || 0}</span><span>Unavailable: ${Number(safeSummary.unavailable_sources) || 0}</span></div>`
         : '';
 
     container.innerHTML = summaryHtml + sourceRows;

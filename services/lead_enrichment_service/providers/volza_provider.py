@@ -9,6 +9,8 @@ class VolzaProvider(LeadSourceProvider):
         return "volza"
 
     def validate_config(self, org_context: Dict[str, Any]) -> bool:
+        if org_context.get("request") is not None:
+            return True
         db = org_context.get("db_session")
         organization_id = org_context.get("organization_id")
         if db is None or not organization_id:
@@ -21,4 +23,4 @@ class VolzaProvider(LeadSourceProvider):
         request: Any,
         org_context: Dict[str, Any],
     ) -> Tuple[str, List[Dict[str, Any]], str]:
-        return "error", [], "Volza source is not configured."
+        return "unavailable", [], "Volza integration is not available. API access required."

@@ -212,6 +212,12 @@ def _build_results_from_runs(
     results: Dict[str, Dict[str, Any]] = {}
     for run in source_runs:
         source_key = _source_enum_to_key(run.source)
+        if run.message == "Volza integration is not available. API access required.":
+            results[source_key] = {
+                "status": "unavailable",
+                "message": run.message,
+            }
+            continue
         run_status = _to_legacy_task_status(run.status)
         if run_status == "completed":
             results[source_key] = {
@@ -251,6 +257,7 @@ def _lead_scrape_task_to_legacy_payload(
             "total_sources_requested": len(task.requested_sources or []),
             "successful_sources": sum(1 for r in results_payload.values() if r.get("status") == "success"),
             "failed_sources": sum(1 for r in results_payload.values() if r.get("status") == "error"),
+            "unavailable_sources": sum(1 for r in results_payload.values() if r.get("status") == "unavailable"),
         }
     )
 
@@ -710,8 +717,8 @@ async def _scrape_leads_task(
                         provider_name=source,
                         timestamp=provider_started_at,
                         duration=provider_duration,
-                        success=status == "success",
-                        error_message=None if status == "success" else (message or f"{source_label} scraping failed."),
+                        success=status in {"success", "unavailable"},
+                        error_message=None if status in {"success", "unavailable"} else (message or f"{source_label} scraping failed."),
                         lead_count=len(leads) if isinstance(leads, list) else 0,
                     )
                 )
@@ -785,6 +792,21 @@ async def _scrape_leads_task(
                 except Exception:
                     db.rollback()
                     raise
+            elif status == "unavailable":
+                unavailable_message = message or f"{source_label} is unavailable."
+                results[source] = {
+                    "status": "unavailable",
+                    "message": unavailable_message,
+                }
+                db_source_run.status = TaskStatus.COMPLETED
+                db_source_run.leads_count = 0
+                db_source_run.message = unavailable_message
+                db_source_run.completed_at = datetime.utcnow()
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
             else:
                 failure_message = message or f"{source_label} scraping failed."
                 results[source] = {
@@ -802,9 +824,15 @@ async def _scrape_leads_task(
                     raise
 
         successful_sources = sum(1 for data in results.values() if data.get("status") == "success")
-        failed_sources = len(results) - successful_sources
+        unavailable_sources = sum(1 for data in results.values() if data.get("status") == "unavailable")
+        failed_sources = sum(1 for data in results.values() if data.get("status") == "error")
 
-        task_status = "completed" if successful_sources > 0 else "failed"
+        if failed_sources > 0 and (successful_sources > 0 or unavailable_sources > 0):
+            task_status = "partial"
+        elif failed_sources > 0:
+            task_status = "failed"
+        else:
+            task_status = "completed"
         task_payload = {
             "task_id": task_id,
             "organization_id": org_id,
@@ -820,6 +848,7 @@ async def _scrape_leads_task(
                 "total_sources_requested": len(sources),
                 "successful_sources": successful_sources,
                 "failed_sources": failed_sources,
+                "unavailable_sources": unavailable_sources,
             },
             "completed_at": datetime.utcnow().isoformat(),
         }
