@@ -1,11 +1,11 @@
 # MAi Campaign Planner Service
 # Created by Mrityunjay Pandey, AIMarketer Pvt. Ltd.
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 import uuid
 import sys
@@ -14,11 +14,16 @@ import httpx
 import time
 import json
 import re
+import logging
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.database import get_db, SessionLocal, FeatureName, Campaign, CampaignMetric, Strategy, StrategyVersion
 from shared.auth import require_feature
+from services.campaign_planner_service.campaign_scheduler import enqueue_campaign_execution
+from services.campaign_planner_service.email_service import EmailService
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MAi Campaign Planner Service",
@@ -39,6 +44,65 @@ LEAD_SERVICE_TIMEOUT = httpx.Timeout(10.0, connect=10.0)
 ALLOWED_AUDIENCE_SOURCES = {"scraped_leads", "customer_upload", "manual_selection"}
 IDEMPOTENCY_TTL_SECONDS = int(os.getenv("CAMPAIGN_IDEMPOTENCY_TTL_SECONDS", "3600"))
 _IDEMPOTENCY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def normalize_to_utc(value: Optional[datetime], field_name: str) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        normalized = value.replace(tzinfo=timezone.utc)
+    else:
+        normalized = value.astimezone(timezone.utc)
+
+    logger.info(
+        {
+            "field": field_name,
+            "normalized_value": str(normalized),
+            "normalized_value_tzinfo": str(normalized.tzinfo),
+        }
+    )
+    return normalized
+
+
+def log_datetime_comparison(
+    *,
+    label: str,
+    schedule_date: Optional[datetime] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    current_time: Optional[datetime] = None,
+) -> None:
+    logger.info(
+        {
+            "label": label,
+            "schedule_date": str(schedule_date),
+            "schedule_date_tzinfo": str(schedule_date.tzinfo) if schedule_date else None,
+            "start_date": str(start_date),
+            "start_date_tzinfo": str(start_date.tzinfo) if start_date else None,
+            "end_date": str(end_date),
+            "end_date_tzinfo": str(end_date.tzinfo) if end_date else None,
+            "current_time": str(current_time),
+            "current_time_tzinfo": str(current_time.tzinfo) if current_time else None,
+        }
+    )
+
+
+def normalize_campaign_datetimes(payload: Any) -> Dict[str, Optional[datetime]]:
+    schedule_date = normalize_to_utc(getattr(payload, "schedule_date", None), "schedule_date")
+    scheduled_at = normalize_to_utc(getattr(payload, "scheduled_at", None), "scheduled_at")
+    start_date = normalize_to_utc(getattr(payload, "start_date", None), "start_date")
+    end_date = normalize_to_utc(getattr(payload, "end_date", None), "end_date")
+    resolved_scheduled_at = scheduled_at or schedule_date
+    return {
+        "schedule_date": schedule_date or resolved_scheduled_at,
+        "scheduled_at": resolved_scheduled_at,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
 
 
 def _build_idempotency_cache_key(organization_id: str, idempotency_key: str) -> str:
@@ -83,6 +147,7 @@ class CampaignRequest(BaseModel):
     target_audience: str = Field(..., description="Target audience for the campaign")
     content: Optional[str] = Field(None, description="Campaign content")
     schedule_date: Optional[datetime] = Field(None, description="When to schedule the campaign")
+    scheduled_at: Optional[datetime] = Field(None, description="Canonical scheduled execution timestamp")
     start_date: Optional[datetime] = Field(None, description="Campaign start date")
     end_date: Optional[datetime] = Field(None, description="Campaign end date")
     budget: Optional[float] = Field(None, description="Campaign budget")
@@ -97,6 +162,7 @@ class CampaignUpdateRequest(BaseModel):
     target_audience: Optional[str] = None
     content: Optional[str] = None
     schedule_date: Optional[datetime] = None
+    scheduled_at: Optional[datetime] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     budget: Optional[float] = None
@@ -169,17 +235,41 @@ def _campaign_row_to_response(campaign: Campaign, metric: Optional[CampaignMetri
         "target_audience": campaign.target_audience,
         "content": campaign.content,
         "schedule_date": campaign.schedule_date.isoformat() if campaign.schedule_date else None,
+        "scheduled_at": campaign.scheduled_at.isoformat() if campaign.scheduled_at else None,
         "start_date": campaign.start_date.isoformat() if campaign.start_date else None,
         "end_date": campaign.end_date.isoformat() if campaign.end_date else None,
         "budget": campaign.budget,
         "audience_source": campaign.audience_source or "scraped_leads",
         "manual_selection": campaign.manual_selection if isinstance(campaign.manual_selection, list) else [],
         "status": campaign.status,
+        "email_provider": campaign.email_provider,
+        "last_error": campaign.last_error,
+        "last_attempt_at": campaign.last_attempt_at.isoformat() if campaign.last_attempt_at else None,
+        "retry_count": _as_non_negative_int(campaign.retry_count),
         "metrics": metrics,
         "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
         "updated_at": campaign.updated_at.isoformat() if campaign.updated_at else None,
         "deployed_at": campaign.deployed_at.isoformat() if campaign.deployed_at else None,
     }
+
+
+def _resolve_requested_schedule_date(payload: Any) -> Optional[datetime]:
+    scheduled_at = normalize_to_utc(getattr(payload, "scheduled_at", None), "scheduled_at")
+    schedule_date = normalize_to_utc(getattr(payload, "schedule_date", None), "schedule_date")
+    return scheduled_at or schedule_date
+
+
+def _derive_initial_campaign_status(scheduled_at: Optional[datetime]) -> str:
+    scheduled_at = normalize_to_utc(scheduled_at, "scheduled_at")
+    if scheduled_at:
+        current_time = utc_now()
+        log_datetime_comparison(
+            label="derive_initial_campaign_status",
+            schedule_date=scheduled_at,
+            current_time=current_time,
+        )
+        return "scheduled" if scheduled_at > current_time else "pending"
+    return "pending"
 
 
 def _coerce_string(value: Any, fallback: str = "") -> str:
@@ -354,24 +444,6 @@ async def get_audience_leads(
     return []
 
 
-def send_email_via_smtp(to_email: str, subject: str, body: str) -> bool:
-    from email.mime.text import MIMEText
-    import smtplib
-
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = "noreply@aimarketer.local"
-        msg["To"] = to_email
-
-        with smtplib.SMTP("mailhog", 1025, timeout=10) as smtp:
-            smtp.sendmail(msg["From"], [to_email], msg.as_string())
-
-        return True
-    except Exception:
-        return False
-
-
 def _parse_campaign_content(raw_content: Any) -> Dict[str, Any]:
     """
     Normalize stored campaign content into a dictionary structure.
@@ -471,37 +543,37 @@ def _resolve_channel_message(content_obj: Dict[str, Any], channel: str, fallback
     return _coerce_string(content_obj.get("text"), "")
 
 
-def _dispatch_email_channel(
+async def _dispatch_email_channel(
     campaign: Campaign,
     leads: List[Dict[str, Any]],
     content_obj: Dict[str, Any],
-) -> int:
+) -> Dict[str, Any]:
     email_content = _resolve_email_subject_body(
         campaign_name=campaign.campaign_name,
         content_obj=content_obj,
         raw_content=campaign.content,
     )
-    subject = email_content["subject"]
-    body = email_content["body"]
+    email_payload = _extract_channel_payload(content_obj, "email")
+    cta_label = _coerce_string(email_payload.get("cta_label"), "Book a demo")
+    cta_url = _coerce_string(email_payload.get("cta_url"), "https://example.com")
 
-    sent = 0
-    seen_emails = set()
-    for lead in leads:
-        email = (lead.get("email") or "").strip()
-        if not email:
-            print("[smtp_debug] skip_missing_email", lead.get("id"), lead.get("source"))
-            continue
-        email_key = email.lower()
-        if email_key in seen_emails:
-            print("[smtp_debug] skip_duplicate_email", email)
-            continue
-        seen_emails.add(email_key)
-        print("[smtp_debug] sending to", email)
-        success = send_email_via_smtp(email, subject, body)
-        print("[smtp_debug] send_success", success)
-        if success:
-            sent += 1
-    return sent
+    service = EmailService()
+    result = await service.send_campaign(
+        recipients=leads,
+        subject_template=email_content["subject"],
+        body_template=email_content["body"],
+        cta_label=cta_label,
+        cta_url=cta_url,
+    )
+    return {
+        "sent": result.sent,
+        "rejected": result.rejected,
+        "failed": result.failed,
+        "provider": result.provider,
+        "failures": result.failures,
+        "accepted": result.accepted,
+        "requested": result.requested,
+    }
 
 
 def _dispatch_linkedin_channel(campaign: Campaign, content_obj: Dict[str, Any]) -> int:
@@ -579,8 +651,8 @@ async def execute_campaign(
             conversion_rate=0.0,
             cpa=0.0,
             roi=0.0,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utc_now(),
+            updated_at=utc_now(),
         )
         db.add(metric)
 
@@ -608,25 +680,31 @@ async def execute_campaign(
 
     print(f"[campaign_debug] execute_campaign campaign_id={campaign_id} leads_returned={len(leads)}")
 
-    sent = 0
-    if audience_source in {"customer_upload", "scraped_leads"}:
-        content_obj = _parse_campaign_content(campaign.content)
+    content_obj = _parse_campaign_content(campaign.content)
+    selected_channels = campaign.channels if isinstance(campaign.channels, list) else []
+    normalized_channels = [str(ch).strip().lower() for ch in selected_channels if str(ch).strip()]
+    if not normalized_channels:
+        normalized_channels = ["email"]
 
-        selected_channels = campaign.channels if isinstance(campaign.channels, list) else []
-        normalized_channels = [str(ch).strip().lower() for ch in selected_channels if str(ch).strip()]
-        if not normalized_channels:
-            normalized_channels = ["email"]
-
-        if "email" in normalized_channels:
-            sent += _dispatch_email_channel(campaign, leads, content_obj)
-        if "linkedin" in normalized_channels:
-            _dispatch_linkedin_channel(campaign, content_obj)
-        if "facebook" in normalized_channels:
-            _dispatch_facebook_channel(campaign, content_obj)
-        if "twitter" in normalized_channels:
-            _dispatch_twitter_channel(campaign, content_obj)
-        if "whatsapp" in normalized_channels:
-            _dispatch_whatsapp_channel(campaign, content_obj)
+    email_dispatch_result = {
+        "sent": 0,
+        "rejected": 0,
+        "failed": 0,
+        "provider": None,
+        "failures": [],
+        "accepted": 0,
+        "requested": len(leads),
+    }
+    if "email" in normalized_channels:
+        email_dispatch_result = await _dispatch_email_channel(campaign, leads, content_obj)
+    if "linkedin" in normalized_channels:
+        _dispatch_linkedin_channel(campaign, content_obj)
+    if "facebook" in normalized_channels:
+        _dispatch_facebook_channel(campaign, content_obj)
+    if "twitter" in normalized_channels:
+        _dispatch_twitter_channel(campaign, content_obj)
+    if "whatsapp" in normalized_channels:
+        _dispatch_whatsapp_channel(campaign, content_obj)
 
     # Real interaction tracking endpoints are not implemented yet.
     # Keep engagement metrics at zero until actual events are recorded.
@@ -635,12 +713,34 @@ async def execute_campaign(
     converted = 0
 
     try:
-        now = datetime.utcnow()
-        campaign.status = "active"
+        now = utc_now()
+        campaign.last_attempt_at = now
+        campaign.retry_count = _as_non_negative_int(campaign.retry_count) + 1
         campaign.deployed_at = now
         campaign.updated_at = now
+        campaign.email_provider = email_dispatch_result.get("provider") or campaign.email_provider
 
-        metric.sent = sent
+        failures = email_dispatch_result.get("failures") or []
+        failure_message = "; ".join(
+            f"{item.get('recipient') or 'unknown'}: {item.get('error') or 'send_failed'}"
+            for item in failures[:10]
+        )
+
+        if "email" in normalized_channels:
+            if email_dispatch_result.get("sent", 0) > 0 and email_dispatch_result.get("failed", 0) == 0:
+                campaign.status = "sent"
+                campaign.last_error = None
+            elif email_dispatch_result.get("sent", 0) > 0:
+                campaign.status = "completed"
+                campaign.last_error = failure_message or "partial_delivery_failure"
+            else:
+                campaign.status = "failed"
+                campaign.last_error = failure_message or "no_valid_recipients"
+        else:
+            campaign.status = "completed"
+            campaign.last_error = None
+
+        metric.sent = email_dispatch_result.get("sent", 0)
         metric.opened = opened
         metric.clicked = clicked
         metric.converted = converted
@@ -724,13 +824,13 @@ def _get_strategy_context_for_campaign(
 
 def _parse_possible_datetime(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
-        return value
+        return normalize_to_utc(value, "timeline_datetime")
     text = _coerce_string(value, "")
     if not text:
         return None
     normalized = text.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(normalized)
+        return normalize_to_utc(datetime.fromisoformat(normalized), "timeline_datetime")
     except Exception:
         return None
 
@@ -769,6 +869,14 @@ def _extract_schedule_window_from_timeline(timeline: Any) -> Dict[str, Optional[
 
     start_date = min(start_candidates) if start_candidates else (min(all_dates) if all_dates else None)
     end_date = max(end_candidates) if end_candidates else (max(all_dates) if len(all_dates) > 1 else None)
+
+    log_datetime_comparison(
+        label="extract_schedule_window_before_ordering",
+        schedule_date=start_date,
+        start_date=start_date,
+        end_date=end_date,
+        current_time=utc_now(),
+    )
 
     if start_date and end_date and end_date < start_date:
         start_date, end_date = end_date, start_date
@@ -919,8 +1027,20 @@ async def create_campaign_from_strategy(
             target_audience = "General B2B audience"
 
     campaign_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    schedule_date = normalize_to_utc(schedule_date, "schedule_date")
+    start_date = normalize_to_utc(start_date, "start_date")
+    end_date = normalize_to_utc(end_date, "end_date")
+    now = utc_now()
     campaign_name = f"{strategy.business_name} AI Strategy Campaign"
+    scheduled_at = schedule_date
+    log_datetime_comparison(
+        label="create_campaign_from_strategy",
+        schedule_date=schedule_date,
+        start_date=start_date,
+        end_date=end_date,
+        current_time=now,
+    )
+    initial_status = _derive_initial_campaign_status(scheduled_at)
 
     try:
         db_campaign = Campaign(
@@ -933,12 +1053,14 @@ async def create_campaign_from_strategy(
             target_audience=target_audience,
             content=content,
             schedule_date=schedule_date,
+            scheduled_at=scheduled_at,
             start_date=start_date,
             end_date=end_date,
             budget=budget,
             audience_source="scraped_leads",
             manual_selection=[],
-            status="draft",
+            status=initial_status,
+            email_provider="mailrelay",
             created_at=now,
             updated_at=now,
             deployed_at=None,
@@ -966,6 +1088,14 @@ async def create_campaign_from_strategy(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create campaign from strategy: {str(exc)}")
+
+    if initial_status == "scheduled":
+        enqueue_campaign_execution(
+            campaign_id=campaign_id,
+            organization_id=current_user["organization_id"],
+            auth_header=None,
+            scheduled_at=scheduled_at,
+        )
 
     _cache_campaign_id(current_user["organization_id"], idempotency_key, campaign_id)
 
@@ -998,10 +1128,23 @@ async def create_campaign(
             )
 
         campaign_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        now = utc_now()
         auth_header = request.headers.get("authorization")
         idempotency_key = _coerce_string(request.headers.get("idempotency-key"), "")
         manual_count = len(campaign.manual_selection or [])
+        normalized_datetimes = normalize_campaign_datetimes(campaign)
+        scheduled_at = normalized_datetimes["scheduled_at"]
+        schedule_date = normalized_datetimes["schedule_date"]
+        start_date = normalized_datetimes["start_date"]
+        end_date = normalized_datetimes["end_date"]
+        log_datetime_comparison(
+            label="create_campaign",
+            schedule_date=schedule_date,
+            start_date=start_date,
+            end_date=end_date,
+            current_time=now,
+        )
+        initial_status = _derive_initial_campaign_status(scheduled_at)
 
         if idempotency_key:
             cached_campaign_id = _get_cached_campaign_id(current_user["organization_id"], idempotency_key)
@@ -1046,15 +1189,17 @@ async def create_campaign(
                 channels=campaign.channels,
                 target_audience=campaign.target_audience,
                 content=campaign.content,
-                schedule_date=campaign.schedule_date,
-                start_date=campaign.start_date,
-                end_date=campaign.end_date,
+                schedule_date=schedule_date,
+                scheduled_at=scheduled_at,
+                start_date=start_date,
+                end_date=end_date,
                 budget=campaign.budget,
                 audience_source=audience_source,
                 manual_selection=campaign.manual_selection or [],
-                status="draft",
-                created_at=datetime.fromisoformat(now),
-                updated_at=datetime.fromisoformat(now),
+                status=initial_status,
+                email_provider="mailrelay",
+                created_at=now,
+                updated_at=now,
                 deployed_at=None,
             )
             db.add(db_campaign)
@@ -1072,26 +1217,40 @@ async def create_campaign(
                 conversion_rate=0.0,
                 cpa=0.0,
                 roi=0.0,
-                created_at=datetime.fromisoformat(now),
-                updated_at=datetime.fromisoformat(now),
+                created_at=now,
+                updated_at=now,
             )
             db.add(db_metric)
             db.commit()
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=500, detail=f"Failed to persist campaign: {str(e)}")
-
-        updated_campaign = await execute_campaign(
-            campaign_id,
-            db=db,
-            organization_id=current_user["organization_id"],
-            auth_header=auth_header,
-        )
         _cache_campaign_id(current_user["organization_id"], idempotency_key, campaign_id)
+
+        if initial_status == "scheduled":
+            enqueue_campaign_execution(
+                campaign_id=campaign_id,
+                organization_id=current_user["organization_id"],
+                auth_header=auth_header,
+                scheduled_at=scheduled_at,
+            )
+
+        persisted_row = (
+            db.query(Campaign, CampaignMetric)
+            .outerjoin(CampaignMetric, CampaignMetric.campaign_id == Campaign.id)
+            .filter(
+                Campaign.id == campaign_id,
+                Campaign.organization_id == current_user["organization_id"],
+            )
+            .first()
+        )
+        if not persisted_row:
+            raise HTTPException(status_code=500, detail="Failed to reload created campaign")
+        persisted_campaign, persisted_metric = persisted_row
 
         return {
             "success": True,
-            "campaign": updated_campaign,
+            "campaign": _campaign_row_to_response(persisted_campaign, persisted_metric),
         }
     except HTTPException:
         raise
@@ -1102,7 +1261,6 @@ async def create_campaign(
 @app.post("/api/campaigns/{campaign_id}/schedule", tags=["Campaigns"])
 async def schedule_campaign(
     campaign_id: str,
-    background_tasks: BackgroundTasks,
     request: Request,
     current_user: Dict[str, Any] = Depends(require_feature(FeatureName.CAMPAIGN_PLANNER)),
     db: Session = Depends(get_db),
@@ -1119,25 +1277,46 @@ async def schedule_campaign(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    scheduled_at = normalize_to_utc(campaign.scheduled_at or campaign.schedule_date, "scheduled_at")
+    if not scheduled_at:
+        raise HTTPException(status_code=400, detail="scheduled_at or schedule_date is required before scheduling")
+
+    current_time = utc_now()
+    log_datetime_comparison(
+        label="schedule_campaign",
+        schedule_date=scheduled_at,
+        start_date=normalize_to_utc(campaign.start_date, "start_date"),
+        end_date=normalize_to_utc(campaign.end_date, "end_date"),
+        current_time=current_time,
+    )
+
+    if scheduled_at < current_time:
+        raise HTTPException(status_code=400, detail="Schedule date cannot be in the past")
+
     campaign.status = "scheduled"
-    campaign.updated_at = datetime.utcnow()
+    campaign.scheduled_at = scheduled_at
+    campaign.schedule_date = campaign.schedule_date or scheduled_at
+    campaign.last_error = None
+    campaign.updated_at = current_time
     try:
         db.commit()
     except Exception:
         db.rollback()
         raise
 
-    background_tasks.add_task(
-        _deploy_campaign_task,
-        campaign_id,
-        current_user["organization_id"],
-        request.headers.get("authorization"),
+    task_id = enqueue_campaign_execution(
+        campaign_id=campaign_id,
+        organization_id=current_user["organization_id"],
+        auth_header=request.headers.get("authorization"),
+        scheduled_at=scheduled_at,
     )
 
     return {
         "success": True,
         "message": "Campaign scheduled successfully",
         "campaign_id": campaign_id,
+        "scheduled_at": scheduled_at.isoformat(),
+        "task_id": task_id,
     }
 
 
@@ -1161,11 +1340,20 @@ async def launch_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     current_status = str(campaign.status or "").lower()
-    if current_status not in {"draft", "scheduled"}:
+    if current_status not in {"draft", "pending", "scheduled"}:
         raise HTTPException(
             status_code=409,
             detail=f"Campaign cannot be launched from status '{current_status}'",
         )
+
+    campaign.status = "sending"
+    campaign.last_error = None
+    campaign.updated_at = utc_now()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     updated_campaign = await execute_campaign(
         campaign_id=campaign_id,
@@ -1179,46 +1367,6 @@ async def launch_campaign(
         "message": "Campaign launched successfully",
         "campaign": updated_campaign,
     }
-
-
-async def _deploy_campaign_task(campaign_id: str, organization_id: str, auth_header: Optional[str] = None):
-    """Background task for campaign deployment"""
-    db = SessionLocal()
-    try:
-        campaign = (
-            db.query(Campaign)
-            .filter(
-                Campaign.id == campaign_id,
-                Campaign.organization_id == organization_id,
-            )
-            .first()
-        )
-        if not campaign:
-            return
-
-        await execute_campaign(
-            campaign_id=campaign_id,
-            db=db,
-            organization_id=organization_id,
-            auth_header=auth_header,
-        )
-    except Exception as e:
-        db.rollback()
-        campaign = (
-            db.query(Campaign)
-            .filter(
-                Campaign.id == campaign_id,
-                Campaign.organization_id == organization_id,
-            )
-            .first()
-        )
-        if campaign:
-            campaign.status = "failed"
-            campaign.updated_at = datetime.utcnow()
-            db.commit()
-        print(f"[campaign_debug] deploy_task_failed campaign_id={campaign_id} error={str(e)}")
-    finally:
-        db.close()
 
 
 async def _deploy_to_channel(campaign_id: str, channel: str, campaign_data: dict):
@@ -1271,7 +1419,7 @@ def _set_campaign_status(
         )
 
     campaign.status = normalized_target
-    campaign.updated_at = datetime.utcnow()
+    campaign.updated_at = utc_now()
     try:
         db.commit()
         db.refresh(campaign)
@@ -1388,18 +1536,31 @@ async def update_campaign(
             if payload.content is not None:
                 db_campaign.content = payload.content
             if payload.schedule_date is not None:
-                db_campaign.schedule_date = payload.schedule_date
+                normalized_schedule_date = normalize_to_utc(payload.schedule_date, "schedule_date")
+                db_campaign.schedule_date = normalized_schedule_date
+                db_campaign.scheduled_at = normalized_schedule_date
+            if payload.scheduled_at is not None:
+                normalized_scheduled_at = normalize_to_utc(payload.scheduled_at, "scheduled_at")
+                db_campaign.scheduled_at = normalized_scheduled_at
+                db_campaign.schedule_date = normalized_scheduled_at
             if payload.start_date is not None:
-                db_campaign.start_date = payload.start_date
+                db_campaign.start_date = normalize_to_utc(payload.start_date, "start_date")
             if payload.end_date is not None:
-                db_campaign.end_date = payload.end_date
+                db_campaign.end_date = normalize_to_utc(payload.end_date, "end_date")
             if payload.budget is not None:
                 db_campaign.budget = payload.budget
             if payload.strategy_id is not None:
                 db_campaign.strategy_id = payload.strategy_id
             if payload.strategy_version_no is not None:
                 db_campaign.strategy_version_no = payload.strategy_version_no
-            db_campaign.updated_at = datetime.utcnow()
+            log_datetime_comparison(
+                label="update_campaign",
+                schedule_date=db_campaign.schedule_date,
+                start_date=db_campaign.start_date,
+                end_date=db_campaign.end_date,
+                current_time=utc_now(),
+            )
+            db_campaign.updated_at = utc_now()
             db.commit()
             db.refresh(db_campaign)
         else:
@@ -1446,7 +1607,7 @@ async def pause_campaign(
 
     current_status = str(campaign.status or "").lower()
     campaign.status = "active" if current_status == "paused" else "paused"
-    campaign.updated_at = datetime.utcnow()
+    campaign.updated_at = utc_now()
     try:
         db.commit()
         db.refresh(campaign)
@@ -1572,7 +1733,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "campaign_planner_service",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now().isoformat(),
     }
 
 

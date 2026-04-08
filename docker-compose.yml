@@ -180,6 +180,9 @@ services:
       - "8005:8005"
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-30}
       - ENV=${ENV:-development}
@@ -191,6 +194,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - .:/app
     networks:
@@ -274,6 +279,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://mai_user:mai_password@postgres:5432/mai_db
       - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ENV=${ENV:-development}
     depends_on:
       - postgres
       - redis
@@ -292,6 +300,9 @@ services:
       - "5555:5555"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ENV=${ENV:-development}
     depends_on:
       - redis
     networks:

@@ -20,11 +20,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 import os
 
 Base = declarative_base()
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 # Database connection
 DATABASE_URL = os.getenv(
@@ -203,16 +207,21 @@ class Campaign(Base):
     channels = Column(JSON, nullable=False, default=list)
     target_audience = Column(String, nullable=False)
     content = Column(Text, nullable=True)
-    schedule_date = Column(DateTime, nullable=True)
-    start_date = Column(DateTime, nullable=True)
-    end_date = Column(DateTime, nullable=True)
+    schedule_date = Column(DateTime(timezone=True), nullable=True)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+    start_date = Column(DateTime(timezone=True), nullable=True)
+    end_date = Column(DateTime(timezone=True), nullable=True)
     budget = Column(Float, nullable=True)
     audience_source = Column(String, nullable=False, default="scraped_leads")
     manual_selection = Column(JSON, nullable=False, default=list)
     status = Column(String, nullable=False, default="draft")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    deployed_at = Column(DateTime, nullable=True)
+    email_provider = Column(String, nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    deployed_at = Column(DateTime(timezone=True), nullable=True)
 
     organization = relationship("Organization", back_populates="campaigns")
     metrics = relationship(
@@ -229,7 +238,7 @@ class Campaign(Base):
             name="ck_campaign_date_window",
         ),
         CheckConstraint(
-            "status IN ('draft','scheduled','active','paused','failed','completed')",
+            "status IN ('draft','pending','scheduled','sending','active','paused','stopped','sent','failed','completed')",
             name="ck_campaign_status",
         ),
         CheckConstraint(
